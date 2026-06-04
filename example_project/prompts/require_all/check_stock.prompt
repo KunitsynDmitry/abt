@@ -1,0 +1,14 @@
+{{ config(temperature=0.1, output_schema="stock_check") }}
+
+You are checking current inventory levels for product {{ product_id }}.
+
+WITH fetch_inventory AS (
+    SELECT * FROM {{ source('warehouse_api', 'current_stock') }}
+    WHERE product_id = '{{ product_id }}'
+)
+
+SELECT
+    in_stock,        -- bool
+    quantity_on_hand,-- int
+    location         -- str
+FROM fetch_inventory

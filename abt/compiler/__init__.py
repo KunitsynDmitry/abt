@@ -1,0 +1,1 @@
+"""Compiler — parse → compile pipeline."""

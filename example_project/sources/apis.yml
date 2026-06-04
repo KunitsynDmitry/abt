@@ -1,0 +1,45 @@
+version: 1
+
+sources:
+  - name: warehouse_api
+    description: "Warehouse management system REST API"
+    type: rest_api
+    config:
+      base_url: "https://warehouse.internal/api/v1"
+    tables:
+      - name: current_stock
+        description: "Real-time inventory levels by SKU"
+        endpoint: "/inventory"
+        method: GET
+        params:
+          product_id:
+            type: str
+            required: true
+        result_path: "data"
+
+      - name: delivery_slots
+        description: "Available delivery time slots"
+        endpoint: "/delivery-slots"
+        method: GET
+        params:
+          warehouse:
+            type: str
+            required: true
+        result_path: "data.slots"
+
+  - name: demand_forecast_mcp
+    description: "ML demand forecasting via MCP server"
+    type: mcp_server
+    config:
+      command: "python"
+      args: ["-m", "demand_forecast.server"]
+    tables:
+      - name: forecast
+        description: "Demand forecast for a given SKU and horizon"
+        input_schema:
+          sku:
+            type: str
+            required: true
+          horizon_days:
+            type: int
+            default: 30

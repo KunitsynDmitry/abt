@@ -1,0 +1,14 @@
+{{ config(temperature=0.1, output_schema="demand_forecast") }}
+
+You are forecasting product demand for the next 30 days.
+
+WITH fetch_forecast AS (
+    SELECT * FROM {{ source('demand_forecast_mcp', 'forecast') }}
+    WHERE sku = '{{ product_id }}' AND horizon_days = 30
+)
+
+SELECT
+    predicted_demand,   -- int: units expected
+    confidence,         -- float: 0-1
+    trend               -- str: increasing | stable | decreasing
+FROM fetch_forecast

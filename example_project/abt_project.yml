@@ -1,0 +1,21 @@
+name: inventory_agent
+version: "0.1.0"
+
+paths:
+  prompt_paths: [prompts]
+  schema_paths: [schemas]
+  source_paths: [sources]
+  macro_paths: [macros]
+  target_path: target
+
+models:
+  default:
+    provider: deepseek
+    model: deepseek-chat
+    temperature: 0.7
+    max_tokens: 4096
+
+vars:
+  company_name: "ACME Corp"
+  low_stock_threshold: 10
+  unit_cost: 25.50

@@ -1,0 +1,65 @@
+version: 1
+
+models:
+  - name: stock_check
+    description: "Current inventory levels for a product"
+    fields:
+      - name: in_stock
+        type: bool
+        description: "Whether the product is currently in stock"
+      - name: quantity_on_hand
+        type: int
+        description: "Number of units currently available"
+      - name: location
+        type: str
+        description: "Warehouse location code"
+
+  - name: demand_forecast
+    description: "Demand forecast for a product"
+    fields:
+      - name: predicted_demand
+        type: int
+        description: "Predicted units needed for next 30 days"
+      - name: confidence
+        type: float
+        description: "Confidence score 0-1"
+        constraints:
+          ge: 0.0
+          le: 1.0
+      - name: trend
+        type: str
+        description: "Demand trend direction"
+        constraints:
+          enum: ["increasing", "stable", "decreasing"]
+
+  - name: inventory_analysis
+    description: "Final inventory decision"
+    fields:
+      - name: stock_status
+        type: str
+        description: "Overall stock health"
+        constraints:
+          enum: ["OK", "LOW", "CRITICAL"]
+      - name: items_below_threshold
+        type: list[str]
+        description: "Items needing reorder"
+      - name: total_order_cost
+        type: float
+        description: "Estimated total cost"
+        constraints:
+          ge: 0.0
+      - name: priority
+        type: str
+        description: "Replenishment urgency"
+        constraints:
+          enum: ["low", "medium", "high"]
+
+  - name: fallback_result
+    description: "Fallback vendor response"
+    fields:
+      - name: vendor
+        type: str
+      - name: available
+        type: bool
+      - name: price_per_unit
+        type: float

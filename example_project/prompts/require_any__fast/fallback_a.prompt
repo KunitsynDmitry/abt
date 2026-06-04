@@ -1,0 +1,9 @@
+{{ config(temperature=0.2, output_schema="fallback_result") }}
+
+Try vendor A for emergency restock of {{ product_id }}.
+
+SELECT
+    vendor,       -- str
+    available,    -- bool
+    price_per_unit -- float
+FROM attempt

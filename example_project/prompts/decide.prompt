@@ -1,0 +1,36 @@
+{{ config(temperature=0.3, output_schema="inventory_analysis") }}
+
+You are an inventory decision agent for {{ var('company_name') }}.
+
+Make a purchase recommendation based on the following context:
+
+WITH stock_analysis AS (
+    SELECT in_stock, quantity_on_hand, location
+    FROM {{ ref('require_all/check_stock') }}
+),
+
+demand_analysis AS (
+    SELECT predicted_demand, confidence, trend
+    FROM {{ ref('require_all/check_demand') }}
+    WHERE confidence > 0.5
+),
+
+gap_analysis AS (
+    Compare stock_analysis against demand_analysis.
+    If quantity_on_hand < predicted_demand, calculate the shortfall.
+    Consider safety stock of {{ var('low_stock_threshold') }} units.
+),
+
+order_calculation AS (
+    Based on gap_analysis, calculate:
+    - Recommended order quantity
+    - Total cost at {{ var('unit_cost') }} per unit
+    - Priority level (low if stock > demand, medium if gap < 100, high otherwise)
+)
+
+SELECT
+    stock_status,            -- str: OK | LOW | CRITICAL
+    items_below_threshold,   -- list[str]: items to reorder
+    total_order_cost,        -- float
+    priority                 -- str: low | medium | high
+FROM order_calculation
