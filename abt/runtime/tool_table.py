@@ -12,6 +12,7 @@ class ToolTable:
         self.sources = sources
         self.db = db
         self._tools: dict[str, callable] = {}
+        self._mcp_manager = None
 
     def build_all(self) -> dict[str, callable]:
         for source_name, source_def in self.sources.items():
@@ -71,10 +72,29 @@ class ToolTable:
         return rest_tool
 
     def _build_mcp_tool(self, source: SourceDefinition, table: SourceTable):
-        def mcp_stub(**kwargs) -> dict:
-            return {"status": "mcp_not_connected", "message": "MCP tool stub"}
-        mcp_stub.__name__ = f"{source.name}_{table.name}"
-        return mcp_stub
+        if self._mcp_manager is None:
+            from .mcp_client import McpManager
+            self._mcp_manager = McpManager()
+
+        conn = self._mcp_manager.get_connection(source)
+
+        def mcp_tool(**kwargs) -> dict:
+            cache_key = f"mcp:{source.name}.{table.name}:{_json.dumps(kwargs, sort_keys=True)}"
+            cached = self.db.get_cached_tool_result(cache_key)
+            if cached:
+                return cached
+
+            result = conn.call_tool(table.name, kwargs)
+
+            self.db.cache_tool_result(
+                run_id="", cache_key=cache_key,
+                source_name=source.name, table_name=table.name,
+                input_params=kwargs, output_data=result,
+            )
+            return result
+
+        mcp_tool.__name__ = f"{source.name}_{table.name}"
+        return mcp_tool
 
     def _build_python_tool(self, source: SourceDefinition, table: SourceTable):
         if not table.module or not table.function:

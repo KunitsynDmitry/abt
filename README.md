@@ -206,42 +206,42 @@ abt/
 
 6. **SQLite is the source of truth.** Checkpoints, traces, and tool cache all in one DB. Queryable with SQL.
 
-## What's Implemented (prototype)
+## What's Implemented (v0.3.2)
 
-- [x] Full CLI (init, compile, run, test)
+- [x] Full CLI (init, compile, run, test) — wired to real pipeline
 - [x] YAML schema → dynamic Pydantic models with enum/constraint validation
-- [x] Source/tool registration (REST, MCP, Python stubs)
+- [x] Source/tool registration (REST, MCP stubs, Python function)
 - [x] Jinja environment with ref(), source(), config(), var(), env_var()
-- [x] CTE parser (multi-line and single-line, tool-step detection)
+- [x] CTE parser (multi-line, single-line, tool-step detection)
 - [x] Folder routing parser (require_all, require_any, metadata extraction)
 - [x] Graph builder with dependency resolution and Python code generation
-- [x] SQLite persistence (4 tables, full tracing)
-- [x] Node runner with CTE execution loop and retry logic
-- [x] Graph executor with topological ordering
+- [x] SQLite persistence (4 tables, full tracing, thread-safe)
+- [x] Node runner with CTE execution loop, retries, ref resolution
+- [x] Real LangGraph StateGraph — GraphExecutor builds StateGraph, wires edges
+- [x] **Parallel execution for require_all** — fan-out to children, fan-in via AND-gate
+- [x] **OR-gate for require_any** — fan-out, collector picks first success, all-fail → error
+- [x] **Real LLM calls** via OpenAI-compatible API (DeepSeek), with mock factory for tests
+- [x] **Nested subgraph compilation** — REQUIRE_ALL/REQUIRE_ANY folders → compiled StateGraphs added as nodes. SEQUENTIAL stays inline. Deep nesting (3+ levels) supported.
+- [x] Project-level model defaults — configurable per project, per file, per code
 - [x] Example project (inventory agent, 5 prompts, 4 schemas, 2 sources)
-- [x] Generated Python code runs standalone
-- [x] Integration test passes
+- [x] Generated Python code runs standalone with recursive subgraph support
+- [x] All 5 test suites pass (integration, phase4, phase5, generated_python, nested_subgraphs)
 
-## What's Next (beyond prototype)
+## What's Next
 
-- [ ] Real LLM calls in `_execute_llm_cte` (Anthropic/OpenAI SDK integration)
-- [ ] True parallel execution for `require_all` folders
-- [ ] `require_any` collector with conditional edges (LangGraph routing)
-- [ ] MCP client implementation in tool_table.py
-- [ ] Nested subgraph compilation (folders → actual LangGraph subgraphs)
-- [ ] `abt run --stream` with token streaming
-- [ ] `{{ ref() }}` in CTE with actual node output filtering (WHERE/SELECT)
-- [ ] Manifest file (manifest.json) like dbt
+- [ ] MCP client implementation in tool_table.py (currently returns stub)
+- [ ] Token streaming (`abt run --stream`)
+- [ ] Manifest file (manifest.json)
 - [ ] Incremental compilation (only recompile changed files)
-- [ ] Jinja macro library
 - [ ] dbt-style dependency selectors (`--select +model_name+`)
 - [ ] Web UI for trace exploration over SQLite
 
 ## Running Tests
 
 ```bash
-python tests/test_integration.py         # End-to-end
-python tests/test_phase4_smoke.py        # Compiler
-python tests/test_phase5_smoke.py        # Runtime
-python tests/test_generated_python.py    # Codegen
+python tests/test_integration.py          # End-to-end (example project)
+python tests/test_phase4_smoke.py         # Compiler
+python tests/test_phase5_smoke.py         # Runtime
+python tests/test_generated_python.py     # Codegen
+python tests/test_nested_subgraphs.py     # Nested subgraph compilation
 ```

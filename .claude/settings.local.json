@@ -23,12 +23,12 @@
       "Bash(python *)",
       "Bash(Select-Object -First 80)",
       "PowerShell(python -c \"from abt.cli import cli; cli\\(['test'], standalone_mode=False\\)\" 2>&1)",
-      "Bash(gh auth *)",
-      "PowerShell(Get-Command *)",
-      "PowerShell(winget install *)",
-      "PowerShell(Get-ChildItem *)",
-      "PowerShell(& \"C:\\\\Program Files\\\\GitHub CLI\\\\gh.exe\" auth status 2>&1)",
-      "PowerShell(git *)"
+      "PowerShell(python tests/test_phase4_smoke.py)",
+      "PowerShell(python tests/test_phase5_smoke.py)",
+      "PowerShell(python tests/test_generated_python.py)",
+      "PowerShell(python tests/test_integration.py)",
+      "PowerShell(python tests/test_nested_subgraphs.py)",
+      "PowerShell(python -c \"from abt.cli import cli; cli\\(['compile'], standalone_mode=False\\)\")"
     ]
   }
 }

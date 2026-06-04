@@ -19,6 +19,7 @@ python tests/test_integration.py
 python tests/test_phase4_smoke.py
 python tests/test_phase5_smoke.py
 python tests/test_generated_python.py
+python tests/test_nested_subgraphs.py
 ```
 
 ## Architecture (three levels)
@@ -60,6 +61,7 @@ abt/
 ├── runtime/        # Execution layer
 │   ├── db.py              # DatabaseManager: SQLite DDL + trace/cache CRUD
 │   ├── tool_table.py      # SourceDefinition → callable Python tools
+│   ├── mcp_client.py      # McpConnection + McpManager — persistent MCP stdio
 │   ├── node_runner.py     # CTE loop, retries, ref resolution, output mapping
 │   └── executor.py        # GraphExecutor: topological sort, execution, traces
 ├── cli.py          # Click CLI: init, compile, run, test
@@ -67,7 +69,7 @@ abt/
 └── exceptions.py   # Custom exception hierarchy
 ```
 
-## What's built (v0.3.0 — real LangGraph wired)
+## What's built (v0.3.2 — nested subgraph compilation)
 
 - [x] Full CLI (init, compile, run, test) — all wired to real pipeline
 - [x] YAML schema → dynamic Pydantic with enum/constraint validation
@@ -85,14 +87,15 @@ abt/
 - [x] **Project-level model defaults** — `models.default` in `abt_project.yml` sets fallback model/temperature/max_tokens; `{{ config(...) }}` in `.prompt` overrides per-file; `llm_factory` in code overrides everything
 - [x] Example project (inventory agent: 5 prompts, 4 schemas, 2 sources)
 - [x] Generated Python code runs standalone with correct execution order
-- [x] All 4 test suites pass (integration, phase4, phase5, generated_python)
+- [x] **Nested subgraph compilation** — folders with REQUIRE_ALL/REQUIRE_ANY become compiled LangGraph StateGraphs. `_flatten_tree` produces recursive blocks (parallel/any with children). `_build_blocks_in_graph` recursively builds child StateGraphs, compiles them, adds as nodes in parent. SEQUENTIAL folders stay inline. 3-level nesting tested.
+- [x] All 5 test suites pass (integration, phase4, phase5, generated_python, nested_subgraphs)
 - [x] Mock LLM factory in tests (no real API key needed for CI)
 
 ## What's NOT built (next priorities)
 
 - [x] **require_any with collector node** — true OR-gate: fan-out, collector picks first success, all-fail → error
+- [x] **Nested subgraph compilation** — folders → compiled LangGraph StateGraphs, added as nodes via `sg.add_node(name, compiled_subgraph)`. SEQUENTIAL stays inline, REQUIRE_ALL/REQUIRE_ANY become nested blocks with children. Deep nesting (3+ levels) works.
 - [ ] MCP client in tool_table (currently returns stub)
-- [ ] Nested subgraph compilation (folders → LangGraph subgraphs)
 - [ ] Token streaming (abt run --stream)
 - [ ] Manifest file
 - [ ] Incremental compilation
@@ -130,7 +133,19 @@ A dbt analytics engineer exploring AI agent development. Deep understanding of d
 
 ## Current state (2026-06-04)
 
-v0.3.1 — All 3 routing types functional. `require_all` does true fan-out/fan-in (AND-gate). `require_any` uses collector node for OR-gate (first-success routing). All 4 test suites pass. Generated Python code is routing-aware and runs standalone.
+v0.3.2 — Nested subgraph compilation done. REQUIRE_ALL/REQUIRE_ANY folders compile to real LangGraph StateGraphs, added to parent via `sg.add_node(name, compiled)`. `_flatten_tree` produces recursive blocks (parallel/any with children). `_build_blocks_in_graph` recursively builds and compiles. SEQUENTIAL stays inline for backward compatibility. Generated Python code mirrors the same recursive logic. All 5 test suites pass. 3-level deep nesting tested.
+
+### Nested subgraph architecture (v0.3.2)
+
+```
+require_all/                    → compiled as LangGraph StateGraph
+  sequential_child/             → flattened inline (SEQUENTIAL)
+    step_a.prompt → node
+    step_b.prompt → node
+  check_stock.prompt → node
+```
+
+Each non-sequential folder becomes its own StateGraph, handles internal routing (AND/OR gate), and is added as a single node in the parent. `_block_entry_names`/`_block_exit_names` return `[block["name"]]` — the subgraph looks like one node to its parent.
 
 ## Key files for the example project
 

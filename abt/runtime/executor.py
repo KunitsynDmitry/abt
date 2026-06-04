@@ -233,7 +233,7 @@ class GraphExecutor:
         any_collector.__name__ = f"any_collector_{block['name']}"
         sg.add_node(collector_name, any_collector)
 
-        for child in children:
+        for child in block["children"]:
             for entry in self._block_entry_names(child):
                 sg.add_edge(START, entry)
             for exit_name in self._block_exit_names(child):

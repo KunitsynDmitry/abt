@@ -250,7 +250,7 @@ class GraphBuilder:
             '            return {"errors": [f"require_any block: all nodes failed"]}',
             "        return collector_fn",
             "    sg.add_node(collector_name, make_collector(list(leaf_names)))",
-            "    for child in children:",
+            "    for child in block['children']:",
             "        for entry in _block_entry_names(child):",
             "            sg.add_edge(START, entry)",
             "        for exit_name in _block_exit_names(child):",
