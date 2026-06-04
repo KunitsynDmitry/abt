@@ -69,11 +69,11 @@ abt/
 └── exceptions.py   # Custom exception hierarchy
 ```
 
-## What's built (v0.3.2 — nested subgraph compilation)
+## What's built (v0.3.3 — MCP client)
 
 - [x] Full CLI (init, compile, run, test) — all wired to real pipeline
 - [x] YAML schema → dynamic Pydantic with enum/constraint validation
-- [x] Source/tool registration (REST, MCP stubs, Python function)
+- [x] Source/tool registration (REST, MCP, Python function)
 - [x] Jinja env with ref(), source(), config(), var(), env_var()
 - [x] CTE parser (multi-line, single-line, tool-step detection)
 - [x] Folder routing parser (require_all, require_any, metadata, prompt_root-aware node keys)
@@ -88,14 +88,14 @@ abt/
 - [x] Example project (inventory agent: 5 prompts, 4 schemas, 2 sources)
 - [x] Generated Python code runs standalone with correct execution order
 - [x] **Nested subgraph compilation** — folders with REQUIRE_ALL/REQUIRE_ANY become compiled LangGraph StateGraphs. `_flatten_tree` produces recursive blocks (parallel/any with children). `_build_blocks_in_graph` recursively builds child StateGraphs, compiles them, adds as nodes in parent. SEQUENTIAL folders stay inline. 3-level nesting tested.
+- [x] **MCP client** — `McpConnection` with persistent background asyncio loop, `McpManager` pool, lazy connect on first tool call, SQLite caching like REST tools. Replaces stub `{"status": "mcp_not_connected"}`.
 - [x] All 5 test suites pass (integration, phase4, phase5, generated_python, nested_subgraphs)
-- [x] Mock LLM factory in tests (no real API key needed for CI)
 
 ## What's NOT built (next priorities)
 
 - [x] **require_any with collector node** — true OR-gate: fan-out, collector picks first success, all-fail → error
 - [x] **Nested subgraph compilation** — folders → compiled LangGraph StateGraphs, added as nodes via `sg.add_node(name, compiled_subgraph)`. SEQUENTIAL stays inline, REQUIRE_ALL/REQUIRE_ANY become nested blocks with children. Deep nesting (3+ levels) works.
-- [ ] MCP client in tool_table (currently returns stub)
+- [x] **MCP client** — persistent stdio connection via `McpConnection` + `McpManager`, replaces stub. Background daemon thread with asyncio loop, `run_coroutine_threadsafe` bridge, SQLite-cached results.
 - [ ] Token streaming (abt run --stream)
 - [ ] Manifest file
 - [ ] Incremental compilation
@@ -133,7 +133,9 @@ A dbt analytics engineer exploring AI agent development. Deep understanding of d
 
 ## Current state (2026-06-04)
 
-v0.3.2 — Nested subgraph compilation done. REQUIRE_ALL/REQUIRE_ANY folders compile to real LangGraph StateGraphs, added to parent via `sg.add_node(name, compiled)`. `_flatten_tree` produces recursive blocks (parallel/any with children). `_build_blocks_in_graph` recursively builds and compiles. SEQUENTIAL stays inline for backward compatibility. Generated Python code mirrors the same recursive logic. All 5 test suites pass. 3-level deep nesting tested.
+v0.3.3 — MCP client done. `McpConnection` wraps `mcp` SDK with persistent background-asyncio-loop connection to MCP servers via stdio subprocess. `McpManager` pools connections per source. `ToolTable._build_mcp_tool` replaced stub with real `conn.call_tool()` + SQLite caching. All 5 test suites pass.
+
+Next: **Token streaming** (`abt run --stream`).
 
 ### Nested subgraph architecture (v0.3.2)
 
