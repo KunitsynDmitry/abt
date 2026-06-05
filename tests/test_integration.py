@@ -15,6 +15,7 @@ from abt.compiler.jinja_env import AbtJinjaEnv
 from abt.compiler.prompt_compiler import PromptCompiler
 from abt.compiler.folder_parser import FolderParser
 from abt.compiler.graph_builder import GraphBuilder
+from abt.compiler.manifest_generator import generate_manifest
 from abt.runtime.db import DatabaseManager
 from abt.runtime.tool_table import ToolTable
 from abt.runtime.executor import GraphExecutor
@@ -195,6 +196,50 @@ def test_full_pipeline():
     graph_structure = gb.build_structure()
     assert len(graph_structure.all_nodes) == 5
     assert len(graph_structure.dependency_graph) == 5
+
+    # ── Manifest ─────────────────────────────────────────────
+    manifest = generate_manifest(graph_structure, config)
+
+    # Metadata
+    assert manifest["metadata"]["project_name"] == "inventory_agent"
+    assert manifest["metadata"]["node_count"] == 5
+    assert manifest["metadata"]["source_count"] == 2
+    assert manifest["metadata"]["schema_count"] == 4
+    assert manifest["metadata"]["total_cte_blocks"] == 6
+
+    # Nodes
+    assert len(manifest["nodes"]) == 5
+    decide_manifest = manifest["nodes"]["decide"]
+    assert decide_manifest["qualified_name"] == "decide"
+    assert "require_all/check_stock" in decide_manifest["dependencies"]
+    assert "require_all/check_demand" in decide_manifest["dependencies"]
+    assert len(decide_manifest["cte_blocks"]) == 4
+    assert decide_manifest["output_schema"] == "inventory_analysis"
+
+    # Sources
+    assert "warehouse_api" in manifest["sources"]
+    assert "demand_forecast_mcp" in manifest["sources"]
+    assert manifest["sources"]["warehouse_api"]["type"] == "rest_api"
+    assert manifest["sources"]["demand_forecast_mcp"]["type"] == "mcp_server"
+
+    # Schemas
+    assert "stock_check" in manifest["schemas"]
+    assert "inventory_analysis" in manifest["schemas"]
+    stock_schema = manifest["schemas"]["stock_check"]
+    assert stock_schema["json_schema"]["type"] == "object"
+    assert len(stock_schema["fields"]) == 3
+
+    # Graph
+    assert "routing_tree" in manifest["graph"]
+    assert manifest["graph"]["routing_tree"]["routing"] == "sequential"
+    assert len(manifest["graph"]["routing_tree"]["subgraphs"]) == 2
+    # Topological order: decide must be last
+    topo = manifest["graph"]["topological_order"]
+    assert topo[-1] == "decide", f"decide should be last in topo order, got {topo}"
+
+    # Project
+    assert manifest["project"]["name"] == "inventory_agent"
+    assert manifest["project"]["vars"]["company_name"] == "ACME Corp"
 
     # ── Generate Python code ─────────────────────────────────
     target = project_root / "target"

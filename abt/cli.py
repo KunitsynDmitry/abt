@@ -1,5 +1,6 @@
 """CLI — Click-based command-line interface for abt."""
 
+import copy
 import json
 import sys
 from pathlib import Path
@@ -54,6 +55,7 @@ def compile(select: tuple, full_refresh: bool):
     from .compiler.prompt_compiler import PromptCompiler
     from .compiler.folder_parser import FolderParser
     from .compiler.graph_builder import GraphBuilder
+    from .compiler.manifest_generator import generate_manifest
 
     loader = ProjectLoader(project_root)
     config = loader.load()
@@ -89,7 +91,7 @@ def compile(select: tuple, full_refresh: bool):
     subgraph_count = _count_subgraphs(folder_tree)
     click.echo(f"  Folders: {subgraph_count} subgraphs")
 
-    # Build graph and generate code
+    # Build graph
     gb = GraphBuilder(
         parsed_prompts=parsed,
         folder_tree=folder_tree,
@@ -99,19 +101,30 @@ def compile(select: tuple, full_refresh: bool):
     )
     graph_structure = gb.build_structure()
     target = loader.get_target_dir()
-    code = gb.generate_python_code(graph_structure, target / "compiled_graph.py")
 
+    # Generate manifest
+    manifest = generate_manifest(graph_structure, config)
+    (target / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, default=str), encoding="utf-8"
+    )
+    click.echo(f"  Manifest: target/manifest.json")
+
+    # Generate code
+    code = gb.generate_python_code(graph_structure, target / "compiled_graph.py")
     click.echo(f"  Generated: target/compiled_graph.py ({len(code)} bytes)")
     click.echo("Compilation complete.")
 
 
 @cli.command()
+@click.option("--select", "-s", "selectors", multiple=True,
+              help="Select nodes (dbt-style: +name+, tag:xxx, path:xxx, glob)")
+@click.option("--exclude", multiple=True, help="Exclude nodes from selection")
 @click.option("--thread-id", help="Execution thread ID (for resuming)")
 @click.option("--input", "-i", "input_file", type=click.Path(exists=True), help="JSON input file")
 @click.option("--db-path", default="abt_state.db", help="SQLite database path")
 @click.option("--stream/--no-stream", default=True, help="Stream output to console")
 @click.option("--verbose", "-v", is_flag=True, help="Show LLM traces")
-def run(thread_id: str, input_file: str, db_path: str, stream: bool, verbose: bool):
+def run(selectors, exclude, thread_id, input_file, db_path, stream, verbose):
     """Execute the compiled graph with SQLite persistence."""
     project_root = _find_project_root()
     click.echo(f"Running project at {project_root}...")
@@ -123,6 +136,8 @@ def run(thread_id: str, input_file: str, db_path: str, stream: bool, verbose: bo
     from .compiler.prompt_compiler import PromptCompiler
     from .compiler.folder_parser import FolderParser
     from .compiler.graph_builder import GraphBuilder
+    from .compiler.manifest_generator import generate_manifest
+    from .compiler.selector import NodeSelector
     from .runtime.db import DatabaseManager
     from .runtime.tool_table import ToolTable
     from .runtime.executor import GraphExecutor
@@ -150,6 +165,22 @@ def run(thread_id: str, input_file: str, db_path: str, stream: bool, verbose: bo
         project_name=config.name,
     )
     graph_structure = gb.build_structure()
+
+    # Generate manifest
+    manifest = generate_manifest(graph_structure, config)
+    target = loader.get_target_dir()
+    (target / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, default=str), encoding="utf-8"
+    )
+
+    # Apply selectors
+    node_selector = NodeSelector(manifest)
+    selected_names = node_selector.resolve_selectors(list(selectors) if selectors else None)
+    selected_names = node_selector.resolve_exclusions(selected_names, list(exclude) if exclude else None)
+
+    if selectors or exclude:
+        graph_structure = _filter_graph_structure(graph_structure, set(selected_names))
+        click.echo(f"  Selected: {len(selected_names)} nodes")
 
     # Load input
     initial_input = {}
@@ -248,6 +279,50 @@ def _count_subgraphs(sg) -> int:
     for child in sg.subgraphs:
         count += _count_subgraphs(child)
     return count
+
+
+def _filter_graph_structure(graph_structure, selected: set):
+    """Return a shallow copy of graph_structure with only selected nodes.
+
+    Filters all_nodes, dependency_graph, and prunes the root subgraph tree.
+    """
+    gs = copy.copy(graph_structure)
+    gs.all_nodes = {
+        k: v for k, v in gs.all_nodes.items() if k in selected
+    }
+    gs.dependency_graph = {
+        k: {d for d in deps if d in selected}
+        for k, deps in gs.dependency_graph.items()
+        if k in selected
+    }
+    gs.root = _prune_subgraph(gs.root, selected)
+    return gs
+
+
+def _prune_subgraph(sg, selected: set):
+    """Recursively remove non-selected nodes from a SubgraphDef. Returns a new SubgraphDef."""
+    from .models.graph import SubgraphDef
+
+    pruned_nodes = [n for n in sg.nodes if n in selected]
+    pruned_children = [
+        _prune_subgraph(child, selected)
+        for child in sg.subgraphs
+    ]
+    pruned_children = [c for c in pruned_children if c is not None]
+
+    if not pruned_nodes and not pruned_children:
+        return None
+
+    return SubgraphDef(
+        name=sg.name,
+        folder_name=sg.folder_name,
+        routing=sg.routing,
+        metadata=sg.metadata,
+        parent_ref=sg.parent_ref,
+        nodes=pruned_nodes,
+        subgraphs=pruned_children,
+        order_index=sg.order_index,
+    )
 
 
 def _create_project_skeleton(root: Path, project_name: str):
