@@ -28,7 +28,8 @@
       "PowerShell(python tests/test_generated_python.py)",
       "PowerShell(python tests/test_integration.py)",
       "PowerShell(python tests/test_nested_subgraphs.py)",
-      "PowerShell(python -c \"from abt.cli import cli; cli\\(['compile'], standalone_mode=False\\)\")"
+      "PowerShell(python -c \"from abt.cli import cli; cli\\(['compile'], standalone_mode=False\\)\")",
+      "Bash(Select-Object -ExpandProperty FullName)"
     ]
   }
 }

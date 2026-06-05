@@ -64,6 +64,49 @@ def _make_mock_llm_factory():
     return factory
 
 
+def _make_streaming_mock_llm_factory():
+    """Mock that handles stream=True and yields char-by-char chunks."""
+    canned = [
+        {"in_stock": True, "quantity_on_hand": 75, "location": "WH-A"},
+        {"predicted_demand": 120, "confidence": 0.85, "trend": "increasing"},
+        {"vendor": "VendorA", "available": True, "price_per_unit": 12.50},
+        {"vendor": "VendorB", "available": False, "price_per_unit": 15.00},
+        {"in_stock": True, "quantity_on_hand": 75, "location": "WH-A"},
+        {"predicted_demand": 120, "confidence": 0.85, "trend": "increasing"},
+        {"shortfall": 45, "safety_stock": 20, "gap": 65},
+        {"stock_status": "LOW", "items_below_threshold": ["SKU-12345"],
+         "total_order_cost": 650.0, "priority": "medium"},
+    ]
+    call_count = [0]
+
+    def factory():
+        mock = MagicMock()
+        def mock_create(*, model, messages, temperature, max_tokens, stream=False, **kwargs):
+            idx = min(call_count[0], len(canned) - 1)
+            call_count[0] += 1
+            content = json.dumps(canned[idx])
+
+            if not stream:
+                resp = MagicMock()
+                resp.choices = [MagicMock()]
+                resp.choices[0].message.content = content
+                resp.usage.prompt_tokens = 100
+                resp.usage.completion_tokens = 50
+                return resp
+            else:
+                chunks = []
+                for ch in content:
+                    chunk = MagicMock()
+                    chunk.choices = [MagicMock()]
+                    chunk.choices[0].delta.content = ch
+                    chunks.append(chunk)
+                return iter(chunks)
+
+        mock.chat.completions.create = mock_create
+        return mock
+    return factory
+
+
 EXAMPLE_PROJECT = Path(__file__).parent.parent / "example_project"
 
 
@@ -208,5 +251,64 @@ def test_full_pipeline():
     print("\n=== Integration test PASSED ===")
 
 
+def test_streaming_callback():
+    """Verify stream_callback receives correct events with streaming mock."""
+    project_root = EXAMPLE_PROJECT
+    loader = ProjectLoader(project_root)
+    config = loader.load()
+
+    schemas = SchemaParser(loader).parse_all()
+    sources = SourceParser(loader).parse_all()
+    jinja_env = AbtJinjaEnv(schema_registry=schemas, source_registry=sources,
+                             project_vars=config.vars, strict=False)
+    prompt_compiler = PromptCompiler(jinja_env, defaults=config.models.get("default"))
+    parsed = prompt_compiler.compile_all(
+        loader.list_prompt_files(), project_root / "prompts"
+    )
+    folder_tree = FolderParser.build_tree(project_root / "prompts", parsed)
+    gb = GraphBuilder(parsed_prompts=parsed, folder_tree=folder_tree,
+                      schema_registry=schemas, source_registry=sources,
+                      project_name=config.name)
+    graph_structure = gb.build_structure()
+
+    db = DatabaseManager(":memory:")
+    db.connect()
+    tool_table = ToolTable(sources, db)
+    tool_table.build_all()
+
+    events: list[tuple] = []
+
+    def collector(node_name, cte_name, delta, event):
+        events.append((node_name, cte_name, delta, event))
+
+    mock_factory = _make_streaming_mock_llm_factory()
+    executor = GraphExecutor(graph_structure, db, tool_table,
+                             llm_factory=mock_factory,
+                             stream_callback=collector)
+    result = executor.execute({"product_id": "SKU-12345"})
+
+    assert len(events) > 0, "Expected streaming events"
+
+    # Verify event order: start -> tokens -> end per CTE
+    current = None
+    for node_name, cte_name, delta, event in events:
+        if event == "cte_start":
+            current = (node_name, cte_name)
+        elif event == "token":
+            assert current == (node_name, cte_name), \
+                f"token for ({node_name}/{cte_name}) but start was {current}"
+        elif event == "cte_end":
+            assert current == (node_name, cte_name), \
+                f"cte_end for ({node_name}/{cte_name}) but start was {current}"
+
+    # Verify all 5 nodes executed
+    node_outputs = result.get("node_outputs", {})
+    assert len(node_outputs) == 5
+    db.close()
+    print("OK: streaming callback receives expected events")
+
+
 if __name__ == "__main__":
     test_full_pipeline()
+    test_streaming_callback()
+    print("\n=== All integration tests PASSED ===")

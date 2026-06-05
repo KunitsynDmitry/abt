@@ -165,7 +165,19 @@ def run(thread_id: str, input_file: str, db_path: str, stream: bool, verbose: bo
     tool_table = ToolTable(sources, db)
     tool_table.build_all()
 
-    executor = GraphExecutor(graph_structure, db, tool_table, llm_factory=None)
+    if stream:
+        def _stream_printer(node_name: str, cte_name: str, delta: str, event: str) -> None:
+            if event == "cte_start":
+                click.echo(f"\n[{node_name}/{cte_name}] ", nl=False)
+            elif event == "token":
+                click.echo(delta, nl=False)
+            elif event == "cte_end":
+                click.echo()
+    else:
+        _stream_printer = None
+
+    executor = GraphExecutor(graph_structure, db, tool_table, llm_factory=None,
+                             stream_callback=_stream_printer)
     click.echo(f"  Nodes: {len(graph_structure.all_nodes)}")
 
     result = executor.execute(initial_input)

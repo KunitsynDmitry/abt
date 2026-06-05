@@ -69,7 +69,7 @@ abt/
 └── exceptions.py   # Custom exception hierarchy
 ```
 
-## What's built (v0.3.3 — MCP client)
+## What's built (v0.3.4 — Token streaming)
 
 - [x] Full CLI (init, compile, run, test) — all wired to real pipeline
 - [x] YAML schema → dynamic Pydantic with enum/constraint validation
@@ -89,6 +89,7 @@ abt/
 - [x] Generated Python code runs standalone with correct execution order
 - [x] **Nested subgraph compilation** — folders with REQUIRE_ALL/REQUIRE_ANY become compiled LangGraph StateGraphs. `_flatten_tree` produces recursive blocks (parallel/any with children). `_build_blocks_in_graph` recursively builds child StateGraphs, compiles them, adds as nodes in parent. SEQUENTIAL folders stay inline. 3-level nesting tested.
 - [x] **MCP client** — `McpConnection` with persistent background asyncio loop, `McpManager` pool, lazy connect on first tool call, SQLite caching like REST tools. Replaces stub `{"status": "mcp_not_connected"}`.
+- [x] **Token streaming** — `abt run --stream` prints LLM tokens in real-time via callback pattern (`CLI → GraphExecutor → NodeRunner → _execute_llm_cte`). Uses `create(stream=True)`, emits `cte_start`/`token`/`cte_end` events. `--no-stream` preserves original non-streaming path.
 - [x] All 5 test suites pass (integration, phase4, phase5, generated_python, nested_subgraphs)
 
 ## What's NOT built (next priorities)
@@ -96,7 +97,7 @@ abt/
 - [x] **require_any with collector node** — true OR-gate: fan-out, collector picks first success, all-fail → error
 - [x] **Nested subgraph compilation** — folders → compiled LangGraph StateGraphs, added as nodes via `sg.add_node(name, compiled_subgraph)`. SEQUENTIAL stays inline, REQUIRE_ALL/REQUIRE_ANY become nested blocks with children. Deep nesting (3+ levels) works.
 - [x] **MCP client** — persistent stdio connection via `McpConnection` + `McpManager`, replaces stub. Background daemon thread with asyncio loop, `run_coroutine_threadsafe` bridge, SQLite-cached results.
-- [ ] Token streaming (abt run --stream)
+- [x] **Token streaming** — callback pattern: `CLI → GraphExecutor → NodeRunner → _execute_llm_cte`. `create(stream=True)`, events: `cte_start`/`token`/`cte_end`.
 - [ ] Manifest file
 - [ ] Incremental compilation
 - [ ] dbt-style selectors
@@ -131,11 +132,11 @@ Code-level override: pass `llm_factory=my_factory` to `GraphExecutor` or `NodeRu
 
 A dbt analytics engineer exploring AI agent development. Deep understanding of dbt's declarative patterns. Wants to apply dbt's elegance to the agent space. Values clean architecture and conceptual clarity over feature bloat. Uses DeepSeek API (OpenAI-compatible) as the LLM backend. Speaks Russian; respond in Russian.
 
-## Current state (2026-06-04)
+## Current state (2026-06-05)
 
-v0.3.3 — MCP client done. `McpConnection` wraps `mcp` SDK with persistent background-asyncio-loop connection to MCP servers via stdio subprocess. `McpManager` pools connections per source. `ToolTable._build_mcp_tool` replaced stub with real `conn.call_tool()` + SQLite caching. All 5 test suites pass.
+v0.3.4 — Token streaming done. `abt run --stream` prints LLM tokens in real-time via callback pattern: `CLI → GraphExecutor → NodeRunner → _execute_llm_cte`. Uses `openai.chat.completions.create(stream=True)`, iterates chunks, emits `cte_start`/`token`/`cte_end` events. `--no-stream` falls back to original non-streaming path. All 5 test suites pass.
 
-Next: **Token streaming** (`abt run --stream`).
+Next: **Manifest file**.
 
 ### Nested subgraph architecture (v0.3.2)
 
@@ -148,6 +149,25 @@ require_all/                    → compiled as LangGraph StateGraph
 ```
 
 Each non-sequential folder becomes its own StateGraph, handles internal routing (AND/OR gate), and is added as a single node in the parent. `_block_entry_names`/`_block_exit_names` return `[block["name"]]` — the subgraph looks like one node to its parent.
+
+### Token streaming architecture (v0.3.4)
+
+Callback pattern: `CLI → GraphExecutor → NodeRunner → _execute_llm_cte`.
+
+```
+cli.py: _stream_printer(node, cte, delta, event)
+  → GraphExecutor.__init__(stream_callback=...)
+    → NodeRunner.__init__(stream_callback=...)
+      → _execute_llm_cte(stream_callback=...)
+```
+
+Callback signature: `(node_name, cte_name, delta, event) -> None`
+Events: `"cte_start"` (delta=""), `"token"` (delta=chunk), `"cte_end"` (delta=full content)
+
+When `stream_callback is None` → original non-streaming `create()` path, zero overhead.
+When set → `create(stream=True)`, iterate chunks, accumulate for SQLite, callback per event.
+
+Key files: `node_runner.py:146,195-228`, `executor.py:53,59,111,210`, `cli.py:168-177`.
 
 ## Key files for the example project
 
