@@ -2,9 +2,9 @@
 
 Inspired by dbt. Compiles declarative `.prompt` files + YAML schemas into LangGraph agents with SQLite persistence.
 
-> **CONTINUE:** v0.7.0 — #1-#5 + #7a done. Next is **#5 Incremental execution** (runtime cache).
-> Incremental: `abt compile` skips unchanged files. `--full-refresh` forces rebuild. See `abt/compiler/cache_manager.py`.
-> **IMPROVEMENTS:** See [IMPROVEMENTS.md](IMPROVEMENTS.md) — architectural review & prioritized roadmap (7 items, 2026-06-05).
+> **CONTINUE:** v0.9.0 — #1-#5 + #7 + #7a + #8b done. Next is **#8c Native streaming** or **#6 Remove codegen**.
+> Incremental: both compile (`abt compile --full-refresh`) and runtime (`abt run --refresh`) skip unchanged work.
+> **IMPROVEMENTS:** See [IMPROVEMENTS.md](IMPROVEMENTS.md) — architectural review & prioritized roadmap (8 of 10 done, 2026-06-05).
 
 ## Key Commands
 
@@ -13,7 +13,10 @@ pip install -e .                        # Install in editable mode
 python -c "from abt.cli import cli; cli(['init', 'name'], standalone_mode=False)"
 python -c "from abt.cli import cli; cli(['compile'], standalone_mode=False)"
 python -c "from abt.cli import cli; cli(['run', '-v'], standalone_mode=False)"
+python -c "from abt.cli import cli; cli(['run', '--refresh'], standalone_mode=False)"
+python -c "from abt.cli import cli; cli(['run', '--trigger', 'daily_check'], standalone_mode=False)"
 python -c "from abt.cli import cli; cli(['test'], standalone_mode=False)"
+python -c "from abt.cli import cli; cli(['serve', '--port', '8000'], standalone_mode=False)"
 python example_project/target/compiled_graph.py   # Standalone generated code
 ```
 
@@ -24,6 +27,8 @@ python tests/test_phase4_smoke.py
 python tests/test_phase5_smoke.py
 python tests/test_generated_python.py
 python tests/test_nested_subgraphs.py
+python tests/test_selectors.py
+python tests/test_triggers.py
 ```
 
 ## Architecture (three levels)
@@ -46,17 +51,19 @@ python tests/test_nested_subgraphs.py
 
 ```
 abt/
-├── models/         # Pydantic data contracts (6 files)
+├── models/         # Pydantic data contracts (7 files)
 │   ├── config.py   # AbtProjectConfig, ProjectPaths
 │   ├── schema.py   # SchemaField, SchemaModel, FieldConstraint
 │   ├── source.py   # SourceDefinition, SourceTable, ToolType enum
 │   ├── prompt.py   # CTEBlock, ParsedPrompt, PromptConfig
 │   ├── node.py     # CompiledNode
-│   └── graph.py    # SubgraphDef, RoutingType, GraphStructure
+│   ├── graph.py    # SubgraphDef, RoutingType, GraphStructure
+│   └── trigger.py  # TriggerType, TriggerInput, TriggerDefinition, TriggerFile
 ├── compiler/       # Parse → compile pipeline
 │   ├── factory.py              # pydantic.create_model() from SchemaModel
 │   ├── schema_parser.py        # schema.yml → {name: PydanticClass}
 │   ├── source_parser.py        # sources.yml → {name: SourceDefinition}
+│   ├── trigger_parser.py       # triggers.yml → {name: TriggerDefinition}
 │   ├── jinja_env.py            # Jinja2 + ref/source/config/var/env_var
 │   ├── cte_parser.py           # WITH...AS extraction, SELECT parsing
 │   ├── prompt_compiler.py      # .prompt → ParsedPrompt (full pipeline)
@@ -72,13 +79,15 @@ abt/
 │   ├── mcp_client.py      # McpConnection + McpManager — persistent MCP stdio
 │   ├── node_runner.py     # CTE loop, retries, ref resolution, output mapping, Pydantic validation
 │   ├── test_runner.py     # .test.yml discovery, safe eval assertions, TestResult
-│   └── executor.py        # GraphExecutor: topological sort, execution, traces, dynamic routing
-├── cli.py          # Click CLI: init, compile, run, test
+│   ├── executor.py        # GraphExecutor: topological sort, execution, traces, dynamic routing
+│   ├── trigger_manager.py # TriggerManager: resolve_input(), activate(), JSONPath resolution
+│   └── server.py          # Starlette app factory: dynamic webhook routes + utility endpoints
+├── cli.py          # Click CLI: init, compile, run, test, serve
 ├── project.py      # ProjectLoader: reads abt_project.yml, discovers files
 └── exceptions.py   # Custom exception hierarchy
 ```
 
-## What's built (v0.5.0 — Incremental compilation)
+## What's built (v0.9.0 — Incremental execution)
 
 - [x] Full CLI (init, compile, run, test) — all wired to real pipeline
 - [x] YAML schema → dynamic Pydantic with enum/constraint validation
@@ -105,6 +114,9 @@ abt/
 - [x] **Explicit CTE types** — `AS TOOL` / `AS LLM` syntax, `CTEBlock.cte_type` field, backward-compatible legacy detection
 - [x] **`abt test`** — `.test.yml` data assertions with safe eval, `TestRunner`, 3 example test files (8 assertions)
 - [x] **Dynamic routing** — `route_on`/`route_when`/`route_default` in config, `add_conditional_edges` in executor, compile-time target resolution
+- [x] **Human-in-the-loop** — `interrupt()` approval gates via `approve_when`/`approve_message` in config
+- [x] **Triggers** — declarative agent activation (schedule, webhook, message), `abt serve` with Starlette, `--trigger` flag, trigger_manager
+- [x] **Incremental execution** — `node_cache` table, `_compute_node_inputs_hash()`, `--refresh` flag, skips LLM calls when inputs unchanged
 
 ## LLM Setup
 
@@ -138,20 +150,21 @@ A dbt analytics engineer exploring AI agent development. Deep understanding of d
 
 ## Current state (2026-06-05)
 
-v0.7.0 — 6 improvements from IMPROVEMENTS.md done. `manifest.json` doubles as compilation cache. All 6 test suites pass (24+ tests).
+v0.9.0 — 8 of 10 improvements from IMPROVEMENTS.md done. Both compile and runtime are incremental. All 7 test suites pass.
 
 **Completed (this session):**
-- #7a Human-in-the-loop — `interrupt()` approval gates via `approve_when`/`approve_message` in config
+- #5 Incremental execution — `node_cache` SQLite table, `_compute_node_inputs_hash()`, `--refresh` flag, skips LLM calls when inputs unchanged
 
 **Completed (previous):**
+- #7 Triggers — `triggers/` directory, `.triggers.yml`, schedule/webhook/message, `abt serve`, `--trigger` flag
+- #7a Human-in-the-loop — `interrupt()` approval gates via `approve_when`/`approve_message` in config
 - #1 Pydantic output validation — `node_runner.py:92-103`, validates against `output_schema_type`, feeds errors back on retry
 - #2 Compile-time ref() contracts — `graph_builder.py:52-57`, `GraphBuildError` on unresolved `ref('X')`
 - #3 Explicit CTE types — `AS TOOL` / `AS LLM` syntax, `CTEBlock.cte_type`, backward-compatible
 - #4 `abt test` — `.test.yml` data assertions, `TestRunner` with safe eval, 8 assertions in example project
 - #5 Dynamic routing — `route_on`/`route_when`/`route_default`, `add_conditional_edges`, compile-time target resolution
 
-**Next: #5 Incremental execution** (runtime cache, 3-4h).
-**Remaining:** #7c Native streaming, #6 Remove codegen.
+**Next: #8c Native streaming** (1h) or **#6 Remove codegen** (1-2h).
 
 ### New features detail
 
@@ -212,6 +225,79 @@ Config fields:
 - `approve_message: str = ""` — optional custom prompt; defaults to "Approve output for 'node_name'?"
 
 Flow: `execute()` → `GraphInterrupt` caught → return `{"__interrupt__": {...}}` → CLI approval loop → `resume(decision)` → final result. Nodes without `approve_when` run normally (zero overhead — `interrupt()` never called).
+
+### Triggers (dbt exposures pattern) — v0.8.0
+
+**Trigger types:** schedule (cron), webhook (HTTP), message (chat).
+
+```yaml
+# triggers/inventory.triggers.yml
+version: 1
+agent: inventory_agent
+triggers:
+  - name: daily_check
+    type: schedule
+    schedule: "0 9 * * *"
+    input:
+      mode: full_scan
+  - name: low_stock_alert
+    type: webhook
+    path: "/hooks/low-stock"
+    method: POST
+    input:
+      mapping:
+        product_id: "$.body.sku"
+        current_qty: "$.body.quantity"
+```
+
+**Key files:** `models/trigger.py:1-55` (TriggerFile, TriggerDefinition, TriggerInput, TriggerType), `compiler/trigger_parser.py:1-29` (TriggerParser), `runtime/trigger_manager.py:1-70` (TriggerManager, `_resolve_jsonpath`), `runtime/server.py:1-62` (Starlette `create_app`), `cli.py:320-405` (serve command, `_start_scheduler`).
+
+**CLI:**
+```bash
+abt serve                          # Start HTTP server + optional scheduler
+abt serve --port 8080              # Custom port
+abt serve --no-scheduler           # Webhooks only
+abt run --trigger daily_check      # Simulate a trigger
+abt run --trigger daily_check --input event.json  # With event data
+```
+
+**Architecture:**
+1. `TriggerParser` reads `triggers/` directory (`.triggers.yml` files), returns `dict[str, TriggerDefinition]`
+2. `TriggerManager.resolve_input()` merges: static → JSONPath mapping → mode shorthand
+3. `TriggerManager.activate()` calls `executor.execute(initial_input)` — full graph run
+4. `create_app()` builds Starlette routes per webhook trigger + utility routes (`/triggers`, `/trigger/{name}`, `/health`)
+5. `_start_scheduler()` uses APScheduler (optional) for cron triggers
+6. Manifest gets a `triggers` section; cache gets `__triggers__` global key
+
+**JSONPath:** Hand-rolled `_resolve_jsonpath()` — `$.body.sku`, `$.query.token`, `$.text`. Returns `None` on missing path (key excluded from input).
+
+**Input merge order:** `static` < `mapping` < `mode`. Mapping overrides static; mode is the final contextual signal.
+
+### Incremental execution architecture (v0.9.0)
+
+```
+NodeRunner.make_node_function()
+  ├── _compute_node_inputs_hash(node, state) → sha256 hex
+  │   Inputs: system_prompt + config(model,temp,max_tokens) + refs + cte_content
+  ├── db.get_cached_node_output(node_name, inputs_hash) → cached or None
+  │   Cache hit → return immediately, skip all LLM calls
+  │   Cache miss → execute CTE loop as normal
+  └── db.cache_node_output(node_name, inputs_hash, output)
+```
+
+**Cache key:** `(node_name, inputs_hash)` — composite primary key.
+
+**Skipped when:**
+- `temperature != 0` — non-deterministic output, can't cache
+- `--refresh` flag — user explicitly wants fresh execution
+
+**CLI:**
+```bash
+abt run                  # Use cache when possible (temp=0 nodes)
+abt run --refresh        # Force re-execute all nodes
+```
+
+**Key files:** `runtime/db.py:63-71` (node_cache DDL), `runtime/db.py:185-200` (get/cache methods), `runtime/node_runner.py:14` (import hashlib), `runtime/node_runner.py:188-205` (_compute_node_inputs_hash), `runtime/node_runner.py:67-72` (cache check in node_fn), `runtime/node_runner.py:161` (cache write), `runtime/executor.py:68` (_use_cache), `cli.py:81` (--refresh flag).
 
 ### Incremental compilation architecture (v0.5.0)
 

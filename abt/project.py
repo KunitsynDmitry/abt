@@ -57,6 +57,14 @@ class ProjectLoader:
                 files.extend(sorted(base.rglob("*.jinja")))
         return files
 
+    def list_trigger_files(self) -> list[Path]:
+        files = []
+        for triggers_path in self.config.paths.triggers_paths:
+            base = self.root / triggers_path
+            if base.exists():
+                files.extend(sorted(base.rglob("*.triggers.yml")))
+        return files
+
     def get_target_dir(self) -> Path:
         target = self.root / self.config.paths.target_path
         target.mkdir(parents=True, exist_ok=True)

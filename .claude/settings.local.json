@@ -46,7 +46,8 @@
       "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_phase5_smoke.py 2>&1)",
       "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_integration.py 2>&1)",
       "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_nested_subgraphs.py 2>&1)",
-      "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_generated_python.py 2>&1)"
+      "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_generated_python.py 2>&1)",
+      "Bash(dir C:UsersWindowsDownloadsabt_v1example_project *)"
     ]
   }
 }

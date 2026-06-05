@@ -74,11 +74,14 @@ def compile(select: tuple, full_refresh: bool):
               help="Select nodes (dbt-style: +name+, tag:xxx, path:xxx, glob)")
 @click.option("--exclude", multiple=True, help="Exclude nodes from selection")
 @click.option("--thread-id", help="Execution thread ID (for resuming)")
-@click.option("--input", "-i", "input_file", type=click.Path(exists=True), help="JSON input file")
+@click.option("--input", "-i", "input_file", type=click.Path(exists=True),
+              help="JSON input file (or event data file when used with --trigger)")
+@click.option("--trigger", help="Trigger name to simulate")
 @click.option("--db-path", default="abt_state.db", help="SQLite database path")
 @click.option("--stream/--no-stream", default=True, help="Stream output to console")
+@click.option("--refresh/--no-refresh", default=False, help="Force re-execute all nodes (ignore cache)")
 @click.option("--verbose", "-v", is_flag=True, help="Show LLM traces")
-def run(selectors, exclude, thread_id, input_file, db_path, stream, verbose):
+def run(selectors, exclude, thread_id, input_file, trigger, db_path, stream, refresh, verbose):
     """Execute the compiled graph with SQLite persistence."""
     project_root = _find_project_root()
     click.echo(f"Running project at {project_root}...")
@@ -115,6 +118,19 @@ def run(selectors, exclude, thread_id, input_file, db_path, stream, verbose):
         with open(input_file) as f:
             initial_input = json.load(f)
 
+    # If --trigger is specified, resolve input from trigger definition
+    if trigger:
+        from .compiler.trigger_parser import TriggerParser
+        trigger_parser = TriggerParser(loader)
+        all_triggers = trigger_parser.parse_all()
+        trigger_def = trigger_parser.resolve_trigger(trigger, all_triggers)
+
+        from .runtime.trigger_manager import TriggerManager
+        tm = TriggerManager(all_triggers)
+        event_data = initial_input if initial_input else {}
+        initial_input = tm.resolve_input(trigger_def, event_data)
+        click.echo(f"  Trigger: {trigger} ({trigger_def.type.value})")
+
     # Execute
     db = DatabaseManager(db_path)
     db.connect()
@@ -136,7 +152,7 @@ def run(selectors, exclude, thread_id, input_file, db_path, stream, verbose):
         _stream_printer = None
 
     executor = GraphExecutor(graph_structure, db, tool_table, llm_factory=None,
-                             stream_callback=_stream_printer)
+                             stream_callback=_stream_printer, use_cache=not refresh)
     click.echo(f"  Nodes: {len(graph_structure.all_nodes)}")
 
     result = executor.execute(initial_input, thread_id=thread_id)
@@ -302,6 +318,108 @@ def test(selectors, exclude, db_path, verbose):
         click.echo("\nAll tests passed.")
 
 
+@cli.command()
+@click.option("--port", type=int, default=8000, help="HTTP server port")
+@click.option("--host", default="127.0.0.1", help="Bind address")
+@click.option("--no-scheduler", is_flag=True, help="Disable cron scheduler")
+@click.option("--no-webhook", is_flag=True, help="Disable webhook routes")
+@click.option("--db-path", default="abt_state.db", help="SQLite database path")
+def serve(port, host, no_scheduler, no_webhook, db_path):
+    """Start the ABT server with webhook handlers and optional scheduler."""
+    import uvicorn
+
+    project_root = _find_project_root()
+    click.echo(f"Serving project at {project_root}...")
+
+    from .compiler.trigger_parser import TriggerParser
+    from .runtime.db import DatabaseManager
+    from .runtime.tool_table import ToolTable
+    from .runtime.executor import GraphExecutor
+    from .runtime.trigger_manager import TriggerManager
+    from .runtime.server import create_app
+
+    artifacts = _compile_project(project_root, full_refresh=False)
+    config = artifacts["config"]
+    loader = artifacts["loader"]
+    graph_structure = artifacts["graph_structure"]
+    manifest = artifacts["manifest"]
+
+    target = loader.get_target_dir()
+    (target / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, default=str), encoding="utf-8"
+    )
+
+    trigger_parser = TriggerParser(loader)
+    all_triggers = trigger_parser.parse_all()
+
+    webhook_count = sum(1 for t in all_triggers.values() if t.type.value == "webhook")
+    schedule_count = sum(1 for t in all_triggers.values() if t.type.value == "schedule")
+    click.echo(f"  Triggers: {len(all_triggers)} total "
+               f"({webhook_count} webhook, {schedule_count} schedule)")
+
+    db = DatabaseManager(db_path)
+    db.connect()
+
+    sources = graph_structure.all_sources
+    tool_table = ToolTable(sources, db)
+    tool_table.build_all()
+
+    executor = GraphExecutor(graph_structure, db, tool_table, llm_factory=None)
+    trigger_manager = TriggerManager(all_triggers, executor)
+
+    if not no_scheduler and schedule_count > 0:
+        _start_scheduler(all_triggers, trigger_manager)
+
+    app = create_app(trigger_manager)
+
+    click.echo(f"\nStarting server on http://{host}:{port}")
+    click.echo(f"  Webhooks: http://{host}:{port}/triggers")
+    click.echo(f"  Health:   http://{host}:{port}/health")
+
+    uvicorn.run(app, host=host, port=port)
+
+
+def _start_scheduler(schedule_triggers, trigger_manager):
+    """Start in-process cron scheduler (requires apscheduler)."""
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        from apscheduler.triggers.cron import CronTrigger
+    except ImportError:
+        click.echo("  (install apscheduler for cron support: pip install apscheduler)")
+        return
+
+    scheduler = BackgroundScheduler()
+
+    for trigger_name, trigger_def in schedule_triggers.items():
+        if trigger_def.type.value != "schedule" or not trigger_def.schedule:
+            continue
+        try:
+            cron_trigger = CronTrigger.from_crontab(trigger_def.schedule)
+        except ValueError as e:
+            click.echo(f"  Warning: invalid cron '{trigger_def.schedule}' "
+                       f"for trigger '{trigger_name}': {e}")
+            continue
+
+        def make_job(name=trigger_name):
+            def job():
+                try:
+                    trigger_manager.activate(name, {})
+                except Exception as e:
+                    click.echo(f"  Scheduler error [{name}]: {e}")
+            return job
+
+        scheduler.add_job(
+            make_job(),
+            trigger=cron_trigger,
+            id=trigger_name,
+            name=trigger_name,
+            replace_existing=True,
+        )
+        click.echo(f"  Scheduled: {trigger_name} ({trigger_def.schedule})")
+
+    scheduler.start()
+
+
 def _compile_project(project_root: Path, full_refresh: bool) -> dict:
     """Compile the project, returning a dict with all build artifacts.
 
@@ -329,6 +447,12 @@ def _compile_project(project_root: Path, full_refresh: bool) -> dict:
 
     sources = SourceParser(loader).parse_all()
     click.echo(f"  Sources: {len(sources)}")
+
+    # Parse triggers (optional — project may have no triggers/)
+    from .compiler.trigger_parser import TriggerParser
+    all_triggers = TriggerParser(loader).parse_all()
+    if all_triggers:
+        click.echo(f"  Triggers: {len(all_triggers)}")
 
     jinja_env = AbtJinjaEnv(
         schema_registry=schemas,
@@ -404,7 +528,7 @@ def _compile_project(project_root: Path, full_refresh: bool) -> dict:
         project_name=config.name,
     )
     graph_structure = gb.build_structure()
-    manifest = generate_manifest(graph_structure, config, file_hashes)
+    manifest = generate_manifest(graph_structure, config, file_hashes, triggers=all_triggers)
 
     return {
         "config": config,
@@ -501,7 +625,7 @@ def _create_project_skeleton(root: Path, project_name: str):
     )
     (root / "abt_project.yml").write_text(config)
 
-    for d in ["prompts", "schemas", "sources", "macros", "target"]:
+    for d in ["prompts", "schemas", "sources", "macros", "triggers", "target"]:
         (root / d).mkdir(exist_ok=True)
 
     example_schema = (

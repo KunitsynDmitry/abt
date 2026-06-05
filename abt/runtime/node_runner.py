@@ -1,5 +1,6 @@
 """NodeRunner — executes a single node's prompt with CTE loop, tools, and retries."""
 
+import hashlib
 import json
 import os
 import re
@@ -20,6 +21,7 @@ class NodeRunner:
         db: DatabaseManager,
         llm_factory: Callable[[], OpenAI] | None = None,
         stream_callback: Callable[[str, str, str, str], None] | None = None,
+        use_cache: bool = True,
     ):
         self.node = compiled_node
         self.tools = {t.__name__: t for t in tools}
@@ -27,6 +29,7 @@ class NodeRunner:
         self._llm_factory = llm_factory
         self._llm_client: OpenAI | None = None
         self._stream_callback = stream_callback
+        self._use_cache = use_cache
         self._tool_call_pattern = re.compile(r"__SOURCE__(\w+)\.(\w+)__")
 
     def _get_llm(self) -> OpenAI:
@@ -51,12 +54,23 @@ class NodeRunner:
         db = self.db
         get_llm = self._get_llm
         stream_callback = self._stream_callback
+        use_cache = self._use_cache
 
         def node_fn(state: dict) -> dict:
             run_id = state.get("_run_id", "unknown")
             node_name = node.qualified_name
             exec_id = db.log_node_start(run_id, node_name, state)
             validation_feedback = None
+
+            # Incremental execution: skip if inputs unchanged
+            config = node.prompt.config
+            inputs_hash = None
+            if use_cache and config.temperature == 0:
+                inputs_hash = _compute_node_inputs_hash(node, state)
+                cached = db.get_cached_node_output(node_name, inputs_hash)
+                if cached is not None:
+                    db.log_node_complete(exec_id, cached)
+                    return {"node_outputs": {node_name: cached}}
 
             for attempt in range(node.max_retries):
                 try:
@@ -143,6 +157,8 @@ class NodeRunner:
                                     output = decision.get("edited_output", output)
 
                     db.log_node_complete(exec_id, output)
+                    if inputs_hash is not None:
+                        db.cache_node_output(node_name, inputs_hash, output)
                     return {
                         "node_outputs": {node_name: output},
                     }
@@ -167,6 +183,21 @@ class NodeRunner:
 
         node_fn.__name__ = f"run_{node.name}"
         return node_fn
+
+
+def _compute_node_inputs_hash(node: CompiledNode, state: dict) -> str:
+    """Hash inputs that determine node output: system prompt, config, refs, CTEs."""
+    config = node.prompt.config
+    refs = state.get("node_outputs", {})
+    parts = [
+        node.prompt.system_prompt or "",
+        json.dumps({"model": config.model, "temperature": config.temperature,
+                     "max_tokens": config.max_tokens}, sort_keys=True),
+        json.dumps(refs, sort_keys=True, default=str),
+    ]
+    for cte in node.prompt.cte_blocks:
+        parts.append(cte.rendered_content or cte.raw_content)
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
 def _execute_tool_cte(cte, cte_results, tools, db, run_id):

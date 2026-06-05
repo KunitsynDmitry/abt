@@ -60,12 +60,14 @@ class GraphExecutor:
         tool_table: ToolTable | None = None,
         llm_factory: Callable[[], Any] | None = None,
         stream_callback: Callable[[str, str, str, str], None] | None = None,
+        use_cache: bool = True,
     ):
         self.structure = graph_structure
         self.db = db
         self.tool_table = tool_table
         self.llm_factory = llm_factory
         self.stream_callback = stream_callback
+        self._use_cache = use_cache
         self._checkpointer = MemorySaver()
         self._app = None
         self._config = None
@@ -161,7 +163,7 @@ class GraphExecutor:
         for node_name in ordered:
             node = self.structure.all_nodes[node_name]
             tools = self.tool_table.get_tools_for_node(node.resolved_tools) if self.tool_table else []
-            runner = NodeRunner(node, tools, self.db, llm_factory=self.llm_factory, stream_callback=self.stream_callback)
+            runner = NodeRunner(node, tools, self.db, llm_factory=self.llm_factory, stream_callback=self.stream_callback, use_cache=self._use_cache)
             node_fn = runner.make_node_function()
 
             update = node_fn(state)
@@ -260,7 +262,7 @@ class GraphExecutor:
             if self.tool_table
             else []
         )
-        runner = NodeRunner(compiled_node, tools, self.db, llm_factory=self.llm_factory, stream_callback=self.stream_callback)
+        runner = NodeRunner(compiled_node, tools, self.db, llm_factory=self.llm_factory, stream_callback=self.stream_callback, use_cache=self._use_cache)
         node_fn = runner.make_node_function()
         sg.add_node(node_name, node_fn)
 

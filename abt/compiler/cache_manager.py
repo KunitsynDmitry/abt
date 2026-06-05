@@ -13,7 +13,7 @@ from ..models.prompt import CTEBlock, ParsedPrompt, PromptConfig
 class CacheManager:
     """Loads previous manifest, detects staleness, merges cached + fresh results."""
 
-    GLOBAL_KEYS = ["__project__", "__macros__", "__schemas__", "__sources__"]
+    GLOBAL_KEYS = ["__project__", "__macros__", "__schemas__", "__sources__", "__triggers__"]
 
     def __init__(self, target_dir: Path):
         self.target_dir = target_dir
@@ -144,6 +144,11 @@ class CacheManager:
         source_files = loader.list_source_files()
         if source_files:
             hashes["__sources__"] = hash_file_list(source_files)
+
+        # Triggers (combined — any trigger change invalidates all prompts)
+        trigger_files = loader.list_trigger_files()
+        if trigger_files:
+            hashes["__triggers__"] = hash_file_list(trigger_files)
 
         # Individual prompt files, keyed by qualified name
         for fp in loader.list_prompt_files():

@@ -1,6 +1,6 @@
 # IMPROVEMENTS — Architectural critique & roadmap
 
-Based on the 2026-06-05 review. Each section: problem → solution → effort.
+Based on the 2026-06-05 review. Each section: problem → solution → effort. **8 of 10 items done** (v0.9.0).
 
 ---
 
@@ -119,7 +119,7 @@ Optionally: re-run the node with a fixed input to get deterministic test output 
 
 ---
 
-## 5. Incremental execution (runtime cache)
+## 5. Incremental execution (runtime cache) — DONE 2026-06-05
 
 **Problem:** `abt run` always executes ALL nodes. Changing one `.prompt` file re-runs everything, including expensive LLM calls for unchanged nodes. This is the runtime analogue of incremental compilation.
 
@@ -129,10 +129,11 @@ Note: incremental **compilation** is already done (v0.5.0, `cache_manager.py`). 
 
 ```sql
 CREATE TABLE IF NOT EXISTS node_cache (
-    node_name TEXT PRIMARY KEY,
+    node_name TEXT NOT NULL,
     inputs_hash TEXT NOT NULL,
     outputs_json TEXT NOT NULL,
-    created_at TEXT DEFAULT (datetime('now'))
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (node_name, inputs_hash)
 );
 ```
 
@@ -152,7 +153,7 @@ abt run --refresh                # Force re-execute all LLM nodes
 abt run --refresh --select decide  # Force re-execute specific node
 ```
 
-**Files to change:** `runtime/db.py` (DDL + CRUD), `runtime/node_runner.py` (cache check before LLM call), `cli.py` (--refresh flag)
+**Files changed:** `runtime/db.py` (DDL + 2 methods), `runtime/node_runner.py` (hash function + cache check + cache write), `runtime/executor.py` (use_cache thread), `cli.py` (--refresh flag)
 
 **Effort:** 3-4 hours
 
@@ -179,7 +180,7 @@ The generated Python file has already diverged from real execution (no streaming
 
 ---
 
-## 7. Triggers (dbt exposures pattern)
+## 7. Triggers (dbt exposures pattern) — DONE 2026-06-05
 
 **Problem:** `abt run` is a one-shot command. But agents are event-driven — they react to schedules, webhooks, chat messages. There's no declarative way to describe *what activates* the agent. Without this, the user must wire up cron, webhook servers, and chat adapters manually outside of ABT.
 
@@ -298,9 +299,9 @@ Replace the 4-layer callback chain (`CLI → GraphExecutor → NodeRunner → _e
 | 3 | Explicit CTE types (AS LLM / AS TOOL) | 1 | Medium | DONE |
 | 4 | `abt test` | 2-3 | High | DONE |
 | 8b | Dynamic routing (conditional edges) | 2-3 | High | DONE |
-| 7 | Triggers (dbt exposures pattern) | 4-5 | High | **Next** |
+| 7 | Triggers (dbt exposures pattern) | 4-5 | High | DONE |
 | 8a | Human-in-the-loop | 1-2 | Medium | DONE |
-| 5 | Incremental execution | 3-4 | Medium | |
+| 5 | Incremental execution | 3-4 | Medium | DONE |
 | 8c | Native streaming | 1 | Low | |
 | 6 | Remove codegen | 1-2 | Low | |
 
@@ -354,3 +355,84 @@ Every time the user writes `FROM {{ ref('X') }}`, the compiler must guarantee th
 - `executor._wire_sequential_blocks()`: calls `_try_add_dynamic_edges` for each block exit; on success skips static edge
 - Failed nodes (error in output) → returns `route_default or "__END__"`
 - `manifest_generator.py`: serializes `route_on`, `route_when`, `route_default` in config + `route_on`, `route_map`, `route_default` in node
+
+### #7 Triggers — `models/trigger.py`, `compiler/trigger_parser.py`, `runtime/trigger_manager.py`, `runtime/server.py`, `cli.py`
+
+**Models** (`models/trigger.py:1-55`):
+- `TriggerType(str, Enum)`: SCHEDULE, WEBHOOK, MESSAGE
+- `TriggerInput`: mode (str|None), mapping (dict[str,str]), static (dict[str,Any])
+- `TriggerDefinition`: name, type, description, schedule, path, method, input
+- `TriggerFile`: version, agent, triggers[], from_yaml(path)
+- Follows `SourceFile.from_yaml()` pattern exactly
+
+**Parser** (`compiler/trigger_parser.py:1-29`):
+- `TriggerParser(project_loader).parse_all() -> dict[str, TriggerDefinition]`
+- Follows `SourceParser` pattern: discover files → from_yaml → flatten → detect duplicates
+- `resolve_trigger(name, registry)` with `AbtError` on miss
+
+**Project discovery** (`project.py:60-66`):
+- `list_trigger_files()` — globs `*.triggers.yml` in `triggers_paths`
+- `ProjectPaths.triggers_paths: list[str] = ["triggers"]`
+- `validate_project_structure()` validates triggers_paths exist
+
+**Cache** (`cache_manager.py:16,148-152`):
+- `__triggers__` added to `GLOBAL_KEYS` — any trigger change → full rebuild
+- `_compute_current_hashes()` hashes all trigger files via `hash_file_list()`
+
+**Manifest** (`manifest_generator.py:27-31,55-57,82,92`):
+- `generate_manifest(..., triggers=None)` — new optional param
+- New `"triggers"` section: `{trigger_name: trigger_def.model_dump()}`
+- `trigger_count` in metadata
+
+**Runtime** (`runtime/trigger_manager.py:1-70`):
+- `_resolve_jsonpath(data, expr)` — hand-rolled JSONPath: `$.body.sku` → `data["body"]["sku"]`. Returns None on missing path.
+- `TriggerManager(triggers, executor)`:
+  - `resolve_input(trigger, event_data)` — merge: static → mapping → mode
+  - `activate(name, event_data, thread_id)` — resolve + executor.execute()
+  - `list_triggers()` — serialized summaries for server routes
+
+**Server** (`runtime/server.py:1-62`):
+- `create_app(trigger_manager) -> Starlette`
+- Dynamic routes per webhook trigger (path + method from definition)
+- Utility routes: GET /triggers, POST /trigger/{name}, GET /health
+- `make_webhook_handler()` uses closure with default arg to avoid late-binding trap
+- Event data includes `body` (parsed JSON) + `query` (URL params)
+
+**CLI** (`cli.py:77-81,116-128,320-405`):
+- `abt run --trigger NAME --input event.json`: resolves trigger input, passes to executor
+- `abt serve --port 8000 --host 127.0.0.1`: compiles project, starts Starlette via uvicorn
+- `abt serve --no-scheduler`: webhooks only
+- `_start_scheduler()`: APScheduler BackgroundScheduler with CronTrigger, warns if not installed
+- `_create_project_skeleton()`: creates `triggers/` directory
+
+**Example:** `example_project/triggers/inventory.triggers.yml` — 3 triggers (daily_check schedule, low_stock_alert webhook, chat_request message)
+
+**Tests:** `tests/test_triggers.py` — 12 tests: 3 model parsing, 5 JSONPath, 4 input resolution
+
+### #5 Incremental execution — `runtime/db.py`, `node_runner.py`, `executor.py`, `cli.py`
+
+**Database** (`runtime/db.py:63-71,185-200`):
+- `node_cache` table: `(node_name, inputs_hash)` composite PK + `outputs_json` + `created_at`
+- `get_cached_node_output(node_name, inputs_hash) -> dict | None` — check cache
+- `cache_node_output(node_name, inputs_hash, output)` — store result
+
+**Node runner** (`runtime/node_runner.py:14,67-72,161,188-205`):
+- `import hashlib` — SHA256 for inputs hash
+- `NodeRunner.__init__(use_cache=True)` — controls caching behavior
+- `_compute_node_inputs_hash(node, state)` — hashes system_prompt + config(model,temp,max_tokens) + refs + CTE content
+- Cache check before CTE loop: if `use_cache and temp == 0` → `get_cached_node_output()` → hit: return immediately
+- Cache write after `db.log_node_complete()`: if `inputs_hash is not None` → `cache_node_output()`
+- `inputs_hash = None` when caching disabled → never stored
+
+**Executor** (`runtime/executor.py:68,263,166`):
+- `GraphExecutor.__init__(use_cache=True)` — stored as `self._use_cache`
+- Passed to `NodeRunner` in `_add_leaf_node_to()` and `execute_sequential()`
+
+**CLI** (`cli.py:81,155`):
+- `--refresh/--no-refresh` flag (default: `--no-refresh`)
+- `GraphExecutor(..., use_cache=not refresh)`
+
+**Cache skipped when:**
+- `temperature != 0` — non-deterministic output
+- `--refresh` flag — explicit re-execution
+- `use_cache=False` — passed through from executor

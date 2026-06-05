@@ -1,0 +1,26 @@
+version: 1
+agent: inventory_agent
+triggers:
+  - name: daily_check
+    type: schedule
+    description: "Run full inventory scan at 9am daily"
+    schedule: "0 9 * * *"
+    input:
+      mode: full_scan
+
+  - name: low_stock_alert
+    type: webhook
+    description: "Triggered by warehouse system on low stock events"
+    path: "/hooks/low-stock"
+    method: POST
+    input:
+      mapping:
+        product_id: "$.body.sku"
+        current_qty: "$.body.quantity"
+
+  - name: chat_request
+    type: message
+    description: "Triggered by chat message asking about inventory"
+    input:
+      mapping:
+        user_query: "$.text"

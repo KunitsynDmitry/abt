@@ -60,6 +60,14 @@ CREATE TABLE IF NOT EXISTS node_executions (
     FOREIGN KEY (run_id) REFERENCES agent_runs(run_id)
 );
 
+CREATE TABLE IF NOT EXISTS node_cache (
+    node_name TEXT NOT NULL,
+    inputs_hash TEXT NOT NULL,
+    outputs_json TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (node_name, inputs_hash)
+);
+
 CREATE INDEX IF NOT EXISTS idx_llm_traces_run ON llm_traces(run_id);
 CREATE INDEX IF NOT EXISTS idx_node_exec_run ON node_executions(run_id);
 CREATE INDEX IF NOT EXISTS idx_tool_results_run ON tool_results(run_id);
@@ -169,6 +177,26 @@ class DatabaseManager:
             "INSERT OR REPLACE INTO tool_results VALUES (?, ?, ?, ?, ?, ?, ?)",
             (cache_key, run_id, source_name, table_name,
              json.dumps(input_params), json.dumps(output_data), now),
+        )
+        self._commit()
+
+    # ── Node output caching (incremental execution) ──────────────────
+
+    def get_cached_node_output(self, node_name: str, inputs_hash: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT outputs_json FROM node_cache WHERE node_name=? AND inputs_hash=? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (node_name, inputs_hash),
+        ).fetchone()
+        if row:
+            return json.loads(row["outputs_json"])
+        return None
+
+    def cache_node_output(self, node_name: str, inputs_hash: str, output: dict):
+        now = datetime.now(timezone.utc).isoformat()
+        self._execute(
+            "INSERT OR REPLACE INTO node_cache VALUES (?, ?, ?, ?)",
+            (node_name, inputs_hash, json.dumps(output), now),
         )
         self._commit()
 

@@ -28,6 +28,7 @@ def generate_manifest(
     graph_structure: GraphStructure,
     project_config: AbtProjectConfig,
     file_hashes: dict[str, str] | None = None,
+    triggers: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the full manifest dict from a compiled GraphStructure and project config.
 
@@ -51,6 +52,11 @@ def generate_manifest(
     schemas = {}
     for schema_name, model_cls in graph_structure.all_schemas.items():
         schemas[schema_name] = _serialize_schema(schema_name, model_cls)
+
+    triggers_serialized = {}
+    if triggers:
+        for trigger_name, trigger_def in triggers.items():
+            triggers_serialized[trigger_name] = trigger_def.model_dump()
 
     graph = {
         "routing_tree": _subgraph_to_dict(graph_structure.root),
@@ -79,12 +85,14 @@ def generate_manifest(
             "node_count": len(graph_structure.all_nodes),
             "source_count": len(graph_structure.all_sources),
             "schema_count": len(graph_structure.all_schemas),
+            "trigger_count": len(triggers_serialized),
             "total_cte_blocks": total_cte_blocks,
         },
         "file_hashes": file_hashes or {},
         "nodes": nodes,
         "sources": sources,
         "schemas": schemas,
+        "triggers": triggers_serialized,
         "graph": graph,
         "project": project,
     }
