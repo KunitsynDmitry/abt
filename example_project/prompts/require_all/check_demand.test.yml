@@ -1,0 +1,5 @@
+tests:
+  - name: confidence_in_range
+    assert: confidence >= 0 and confidence <= 1
+  - name: demand_not_negative
+    assert: predicted_demand >= 0

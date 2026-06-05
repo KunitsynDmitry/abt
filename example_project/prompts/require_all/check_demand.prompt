@@ -2,7 +2,7 @@
 
 You are forecasting product demand for the next 30 days.
 
-WITH fetch_forecast AS (
+WITH fetch_forecast AS TOOL (
     SELECT * FROM {{ source('demand_forecast_mcp', 'forecast') }}
     WHERE sku = '{{ product_id }}' AND horizon_days = 30
 )

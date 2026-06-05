@@ -4,24 +4,24 @@ You are an inventory decision agent for {{ var('company_name') }}.
 
 Make a purchase recommendation based on the following context:
 
-WITH stock_analysis AS (
+WITH stock_analysis AS LLM (
     SELECT in_stock, quantity_on_hand, location
     FROM {{ ref('require_all/check_stock') }}
 ),
 
-demand_analysis AS (
+demand_analysis AS LLM (
     SELECT predicted_demand, confidence, trend
     FROM {{ ref('require_all/check_demand') }}
     WHERE confidence > 0.5
 ),
 
-gap_analysis AS (
+gap_analysis AS LLM (
     Compare stock_analysis against demand_analysis.
     If quantity_on_hand < predicted_demand, calculate the shortfall.
     Consider safety stock of {{ var('low_stock_threshold') }} units.
 ),
 
-order_calculation AS (
+order_calculation AS LLM (
     Based on gap_analysis, calculate:
     - Recommended order quantity
     - Total cost at {{ var('unit_cost') }} per unit

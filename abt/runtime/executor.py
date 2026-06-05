@@ -16,6 +16,9 @@ from typing_extensions import TypedDict
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
+from langgraph.checkpoint.memory import MemorySaver
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command
 
 from ..models.graph import RoutingType, SubgraphDef
 from .db import DatabaseManager
@@ -63,17 +66,34 @@ class GraphExecutor:
         self.tool_table = tool_table
         self.llm_factory = llm_factory
         self.stream_callback = stream_callback
+        self._checkpointer = MemorySaver()
+        self._app = None
+        self._config = None
+        self._run_id = None
 
     # ── Public API ─────────────────────────────────────────────
 
-    def execute(self, initial_input: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Execute using real LangGraph StateGraph with proper routing."""
+    def execute(
+        self,
+        initial_input: dict[str, Any] | None = None,
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Execute using LangGraph StateGraph with checkpointing and HITL support.
+
+        If a node has approve_when configured and the condition matches,
+        returns {"__interrupt__": {...}} so the CLI can handle the approval
+        and call resume().
+        """
         initial_input = initial_input or {}
         run_id = self.db.create_run(project_name=self.structure.project_name)
+        self._run_id = run_id
 
-        # Build the LangGraph app
         sg = self._build_state_graph()
-        app = sg.compile()
+        app = sg.compile(checkpointer=self._checkpointer)
+        self._app = app
+
+        config = {"configurable": {"thread_id": thread_id or "default"}}
+        self._config = config
 
         init_state = {
             "messages": [],
@@ -83,9 +103,42 @@ class GraphExecutor:
             **initial_input,
         }
 
-        result = app.invoke(init_state)
+        try:
+            result = app.invoke(init_state, config)
+        except GraphInterrupt as e:
+            interrupt_data = e.args[0] if e.args else {}
+            return {"__interrupt__": interrupt_data}
 
         self.db.complete_run(run_id, status="completed", final_state=dict(result))
+        return dict(result)
+
+    def resume(
+        self,
+        decision: dict[str, Any],
+        thread_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Resume execution after an interrupt.
+
+        Args:
+            decision: {"action": "approve"|"reject"|"edit", ...}
+            thread_id: Optional new thread ID (uses the one from execute() if None)
+
+        Returns:
+            Same format as execute(): final result dict or {"__interrupt__": ...}
+        """
+        if self._app is None or self._config is None:
+            raise RuntimeError("No active execution to resume. Call execute() first.")
+
+        if thread_id:
+            self._config["configurable"]["thread_id"] = thread_id
+
+        try:
+            result = self._app.invoke(Command(resume=decision), self._config)
+        except GraphInterrupt as e:
+            interrupt_data = e.args[0] if e.args else {}
+            return {"__interrupt__": interrupt_data}
+
+        self.db.complete_run(self._run_id, status="completed", final_state=dict(result))
         return dict(result)
 
     def execute_sequential(self, initial_input: dict[str, Any]) -> dict[str, Any]:
@@ -244,7 +297,11 @@ class GraphExecutor:
         sg.add_edge(collector_name, END)
 
     def _wire_sequential_blocks(self, sg: StateGraph, blocks: list[dict]) -> None:
-        """Wire START -> blocks[0] -> blocks[1] -> ... -> END sequentially."""
+        """Wire START -> blocks[0] -> blocks[1] -> ... -> END sequentially.
+
+        Nodes with dynamic routing (route_on) use add_conditional_edges
+        instead of static edges, so the LLM output determines the next node.
+        """
         if not blocks:
             sg.add_edge(START, END)
             return
@@ -253,12 +310,51 @@ class GraphExecutor:
             sg.add_edge(START, entry)
 
         for i in range(len(blocks) - 1):
-            for src in self._block_exit_names(blocks[i]):
-                for tgt in self._block_entry_names(blocks[i + 1]):
+            src_names = self._block_exit_names(blocks[i])
+            tgt_names = self._block_entry_names(blocks[i + 1])
+
+            for src in src_names:
+                if self._try_add_dynamic_edges(sg, src):
+                    continue
+                for tgt in tgt_names:
                     sg.add_edge(src, tgt)
 
+        # Last block → END (or dynamic)
         for exit_name in self._block_exit_names(blocks[-1]):
-            sg.add_edge(exit_name, END)
+            if not self._try_add_dynamic_edges(sg, exit_name):
+                sg.add_edge(exit_name, END)
+
+    def _try_add_dynamic_edges(self, sg: StateGraph, node_name: str) -> bool:
+        """Add conditional edges for a node with dynamic routing. Returns True if added."""
+        node = self.structure.all_nodes.get(node_name)
+        if node is None or not node.route_on or not node.route_map:
+            return False
+
+        route_fn = self._make_route_fn(node_name, node.route_on,
+                                       node.route_map, node.route_default)
+
+        # Build path_map: all possible target nodes + END
+        path_map: dict[str, str] = {}
+        for target in node.route_map.values():
+            if target == "__END__":
+                path_map["__END__"] = END
+            else:
+                path_map[target] = target
+        path_map["__END__"] = END
+
+        sg.add_conditional_edges(node_name, route_fn, path_map)
+        return True
+
+    def _make_route_fn(self, node_name: str, route_on: str,
+                       route_map: dict[str, str], route_default: str | None):
+        def route_fn(state: dict) -> str:
+            output = state.get(NODE_OUTPUTS_KEY, {}).get(node_name, {})
+            # Failed nodes go to default / END
+            if output and "error" in output:
+                return route_default or "__END__"
+            value = str(output.get(route_on, ""))
+            return route_map.get(value, route_default or "__END__")
+        return route_fn
 
     def _block_entry_names(self, block: dict) -> list[str]:
         """Entry node names for a block: the node itself."""

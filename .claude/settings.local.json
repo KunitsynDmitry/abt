@@ -29,7 +29,24 @@
       "PowerShell(python tests/test_integration.py)",
       "PowerShell(python tests/test_nested_subgraphs.py)",
       "PowerShell(python -c \"from abt.cli import cli; cli\\(['compile'], standalone_mode=False\\)\")",
-      "Bash(Select-Object -ExpandProperty FullName)"
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "PowerShell(python -c \"from langgraph.types import interrupt; from langgraph.checkpoint.memory import MemorySaver; print\\('OK: interrupt + MemorySaver available'\\)\")",
+      "PowerShell(python -c \"from langgraph.errors import GraphInterrupt; print\\('GraphInterrupt available'\\)\")",
+      "PowerShell(python -c \"from langgraph.types import Command; print\\('Command available:', Command\\)\")",
+      "PowerShell(python -c \"from abt.models.prompt import PromptConfig; p = PromptConfig\\(approve_when='x > 5', approve_message='OK?'\\); print\\('PromptConfig OK:', p.approve_when, p.approve_message\\)\")",
+      "PowerShell(python -c \"from abt.models.node import CompiledNode; print\\('CompiledNode OK'\\)\")",
+      "PowerShell(python -c \"from abt.runtime.executor import GraphExecutor; print\\('GraphExecutor OK'\\)\")",
+      "PowerShell(python tests/test_integration.py 2>&1)",
+      "PowerShell(python tests/test_phase4_smoke.py 2>&1)",
+      "PowerShell(python tests/test_phase5_smoke.py 2>&1)",
+      "PowerShell(python tests/test_nested_subgraphs.py 2>&1)",
+      "PowerShell(python tests/test_generated_python.py 2>&1)",
+      "PowerShell(python -c \"from abt.cli import cli; cli\\(['compile', '--full-refresh'], standalone_mode=False\\)\" 2>&1)",
+      "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_phase4_smoke.py 2>&1)",
+      "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_phase5_smoke.py 2>&1)",
+      "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_integration.py 2>&1)",
+      "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_nested_subgraphs.py 2>&1)",
+      "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_generated_python.py 2>&1)"
     ]
   }
 }

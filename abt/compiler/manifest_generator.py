@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -12,11 +13,27 @@ from ..models.graph import GraphStructure
 from ..compiler.graph_builder import _subgraph_to_dict
 
 
+def load_manifest(target_dir: Path) -> dict[str, Any] | None:
+    """Load a previously generated manifest.json, if it exists."""
+    path = target_dir / "manifest.json"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, KeyError):
+        return None
+
+
 def generate_manifest(
     graph_structure: GraphStructure,
     project_config: AbtProjectConfig,
+    file_hashes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Build the full manifest dict from a compiled GraphStructure and project config."""
+    """Build the full manifest dict from a compiled GraphStructure and project config.
+
+    If file_hashes is provided, it is included as the ``file_hashes`` section
+    for use as a cache fingerprint on the next compilation.
+    """
 
     topological_order = _topological_sort(graph_structure.dependency_graph)
 
@@ -53,7 +70,7 @@ def generate_manifest(
         "vars": project_config.vars,
     }
 
-    return {
+    result: dict[str, Any] = {
         "metadata": {
             "project_name": project_config.name,
             "project_version": project_config.version,
@@ -64,12 +81,14 @@ def generate_manifest(
             "schema_count": len(graph_structure.all_schemas),
             "total_cte_blocks": total_cte_blocks,
         },
+        "file_hashes": file_hashes or {},
         "nodes": nodes,
         "sources": sources,
         "schemas": schemas,
         "graph": graph,
         "project": project,
     }
+    return result
 
 
 def _serialize_node(node: Any, dep_graph: dict[str, set[str]]) -> dict[str, Any]:
@@ -81,6 +100,7 @@ def _serialize_node(node: Any, dep_graph: dict[str, set[str]]) -> dict[str, Any]
             "name": cte.name,
             "raw_content": cte.raw_content,
             "rendered_content": cte.rendered_content,
+            "cte_type": cte.cte_type,
             "is_tool_step": cte.is_tool_step,
             "tool_refs": [list(t) for t in cte.tool_refs],
             "model_refs": cte.model_refs,
@@ -101,6 +121,11 @@ def _serialize_node(node: Any, dep_graph: dict[str, set[str]]) -> dict[str, Any]
             "on_exhaust": prompt.config.on_exhaust,
             "allowed_tools": prompt.config.allowed_tools,
             "output_schema": prompt.config.output_schema,
+            "route_on": prompt.config.route_on,
+            "route_when": prompt.config.route_when,
+            "route_default": prompt.config.route_default,
+            "approve_when": prompt.config.approve_when,
+            "approve_message": prompt.config.approve_message,
         },
         "system_prompt": prompt.system_prompt,
         "cte_blocks": cte_blocks,
@@ -111,6 +136,11 @@ def _serialize_node(node: Any, dep_graph: dict[str, set[str]]) -> dict[str, Any]
         "output_schema": prompt.config.output_schema or None,
         "on_fail_target": node.on_fail_target,
         "max_retries": node.max_retries,
+        "route_on": node.route_on,
+        "route_map": node.route_map,
+        "route_default": node.route_default,
+        "approve_when": node.approve_when,
+        "approve_message": node.approve_message,
     }
 
 

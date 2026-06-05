@@ -10,6 +10,7 @@ from ..models.graph import GraphStructure, RoutingType, SubgraphDef
 from ..models.node import CompiledNode
 from ..models.prompt import ParsedPrompt
 from ..models.schema import SchemaModel
+from ..exceptions import GraphBuildError
 
 
 # State key where node outputs are stored
@@ -46,11 +47,31 @@ class GraphBuilder:
         for qualified_name, node in all_nodes.items():
             deps = set()
             for dep_name in node.prompt.raw_dependencies:
-                # Find which qualified node has this name as its leaf
                 resolved = self._resolve_prompt_ref(dep_name, all_nodes)
-                if resolved:
-                    deps.add(resolved)
+                if resolved is None:
+                    raise GraphBuildError(
+                        f"Node '{qualified_name}' references '{dep_name}' "
+                        f"which does not exist"
+                    )
+                deps.add(resolved)
             dep_graph[qualified_name] = deps
+
+        # Resolve dynamic route targets
+        for qualified_name, node in all_nodes.items():
+            if node.route_map:
+                resolved_map: dict[str, str] = {}
+                for value, target in node.route_map.items():
+                    if target in ("__END__", "END"):
+                        resolved_map[value] = "__END__"
+                    else:
+                        resolved = self._resolve_prompt_ref(target, all_nodes)
+                        if resolved is None:
+                            raise GraphBuildError(
+                                f"Node '{qualified_name}' has route target "
+                                f"'{target}' which does not exist"
+                            )
+                        resolved_map[value] = resolved
+                node.route_map = resolved_map
 
         return GraphStructure(
             project_name=self.project_name,
@@ -72,6 +93,19 @@ class GraphBuilder:
             "max_tokens": prompt.config.max_tokens,
         }
 
+        # Parse dynamic routing config
+        route_on = prompt.config.route_on or None
+        route_map: dict[str, str] = {}
+        route_default = prompt.config.route_default or None
+
+        for entry in prompt.config.route_when:
+            if ":" in entry:
+                value, target = entry.split(":", 1)
+                route_map[value.strip()] = target.strip()
+
+        # Resolve route targets to qualified names (deferred — done in build_structure)
+        # For now, store leaf names; build_structure will resolve them
+
         return CompiledNode(
             name=prompt.name,
             qualified_name=qualified_name,
@@ -81,6 +115,11 @@ class GraphBuilder:
             on_fail_target=prompt.config.on_fail_route,
             max_retries=prompt.config.max_retries,
             llm_config=llm_config,
+            route_on=route_on,
+            route_map=route_map,
+            route_default=route_default,
+            approve_when=prompt.config.approve_when or None,
+            approve_message=prompt.config.approve_message or None,
         )
 
     def _resolve_prompt_ref(

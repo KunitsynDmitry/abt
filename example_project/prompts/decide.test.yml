@@ -1,0 +1,7 @@
+tests:
+  - name: valid_stock_status
+    assert: stock_status in ('OK', 'LOW', 'CRITICAL')
+  - name: valid_priority
+    assert: priority in ('low', 'medium', 'high')
+  - name: order_cost_not_negative
+    assert: total_order_cost >= 0

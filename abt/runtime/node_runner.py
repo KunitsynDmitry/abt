@@ -56,13 +56,14 @@ class NodeRunner:
             run_id = state.get("_run_id", "unknown")
             node_name = node.qualified_name
             exec_id = db.log_node_start(run_id, node_name, state)
+            validation_feedback = None
 
             for attempt in range(node.max_retries):
                 try:
                     cte_results: dict[str, Any] = {}
 
                     for cte in node.prompt.cte_blocks:
-                        if cte.is_tool_step:
+                        if cte.cte_type == "tool":
                             cte_results[cte.name] = _execute_tool_cte(
                                 cte, cte_results, tools, db, run_id
                             )
@@ -71,6 +72,7 @@ class NodeRunner:
                                 cte, cte_results, state, node,
                                 get_llm(), db, run_id,
                                 stream_callback=stream_callback,
+                                validation_feedback=validation_feedback,
                             )
 
                     # Build output from SELECT columns
@@ -86,6 +88,59 @@ class NodeRunner:
                             output = final
                     else:
                         output = {"result": str(final)}
+
+                    # Validate against output schema
+                    schema_cls = node.output_schema_type
+                    if schema_cls is not None and isinstance(output, dict):
+                        try:
+                            validated = schema_cls(**output)
+                            output = validated.model_dump()
+                        except Exception as e:
+                            validation_feedback = (
+                                f"Previous output failed validation: {e}. "
+                                "Please fix the errors and return valid JSON matching the expected schema."
+                            )
+                            raise
+
+                    # HITL: approval gate via interrupt()
+                    if node.approve_when and isinstance(output, dict):
+                        from langgraph.types import interrupt
+
+                        safe_builtins = {
+                            "True": True, "False": False, "None": None,
+                            "int": int, "float": float, "str": str, "bool": bool,
+                            "list": list, "dict": dict, "len": len, "abs": abs,
+                            "min": min, "max": max, "sum": sum, "round": round,
+                            "isinstance": isinstance, "any": any, "all": all,
+                        }
+                        try:
+                            condition_met = eval(
+                                node.approve_when,
+                                {"__builtins__": safe_builtins},
+                                output,
+                            )
+                        except Exception:
+                            condition_met = False
+
+                        if condition_met:
+                            decision = interrupt({
+                                "node": node_name,
+                                "output": output,
+                                "message": (
+                                    node.approve_message
+                                    or f"Approve output for '{node_name}'?"
+                                ),
+                            })
+                            if isinstance(decision, dict):
+                                if decision.get("action") == "reject":
+                                    return {
+                                        "node_outputs": {
+                                            node_name: {"error": "Rejected by user"}
+                                        },
+                                        "errors": [f"{node_name}: rejected by user"],
+                                    }
+                                elif decision.get("action") == "edit":
+                                    output = decision.get("edited_output", output)
 
                     db.log_node_complete(exec_id, output)
                     return {
@@ -144,7 +199,7 @@ def _execute_tool_cte(cte, cte_results, tools, db, run_id):
 
 
 def _execute_llm_cte(cte, cte_results, state, node, llm_client, db, run_id,
-                     stream_callback=None):
+                     stream_callback=None, validation_feedback=None):
     context_parts: dict[str, Any] = {}
 
     if cte_results:
@@ -172,6 +227,9 @@ def _execute_llm_cte(cte, cte_results, state, node, llm_client, db, run_id,
         )
     else:
         system += "\n\nReturn ONLY a JSON object. Do not include explanations."
+
+    if validation_feedback:
+        system += f"\n\n{validation_feedback}"
 
     # Build messages
     messages: list[dict] = [{"role": "system", "content": system}]

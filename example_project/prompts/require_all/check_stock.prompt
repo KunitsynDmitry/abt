@@ -2,7 +2,7 @@
 
 You are checking current inventory levels for product {{ product_id }}.
 
-WITH fetch_inventory AS (
+WITH fetch_inventory AS TOOL (
     SELECT * FROM {{ source('warehouse_api', 'current_stock') }}
     WHERE product_id = '{{ product_id }}'
 )

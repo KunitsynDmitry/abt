@@ -48,62 +48,16 @@ def compile(select: tuple, full_refresh: bool):
     project_root = _find_project_root()
     click.echo(f"Compiling project at {project_root}...")
 
-    from .project import ProjectLoader
-    from .compiler.schema_parser import SchemaParser
-    from .compiler.source_parser import SourceParser
-    from .compiler.jinja_env import AbtJinjaEnv
-    from .compiler.prompt_compiler import PromptCompiler
-    from .compiler.folder_parser import FolderParser
-    from .compiler.graph_builder import GraphBuilder
-    from .compiler.manifest_generator import generate_manifest
+    artifacts = _compile_project(project_root, full_refresh)
+    config = artifacts["config"]
+    loader = artifacts["loader"]
+    graph_structure = artifacts["graph_structure"]
+    gb = artifacts["graph_builder"]
+    manifest = artifacts["manifest"]
 
-    loader = ProjectLoader(project_root)
-    config = loader.load()
-
-    click.echo(f"  Project: {config.name} v{config.version}")
-
-    # Parse schemas
-    schema_parser = SchemaParser(loader)
-    schemas = schema_parser.parse_all()
-    click.echo(f"  Schemas: {len(schemas)} models")
-
-    # Parse sources
-    source_parser = SourceParser(loader)
-    sources = source_parser.parse_all()
-    click.echo(f"  Sources: {len(sources)}")
-
-    # Compile prompts
-    jinja_env = AbtJinjaEnv(
-        schema_registry=schemas,
-        source_registry=sources,
-        project_vars=config.vars,
-        macro_paths=loader.list_macro_files(),
-        strict=False,
-    )
-    prompt_compiler = PromptCompiler(jinja_env, defaults=config.models.get("default"))
-    prompt_files = loader.list_prompt_files()
-    prompt_root = project_root / config.paths.prompt_paths[0]
-    parsed = prompt_compiler.compile_all(prompt_files, prompt_root)
-    click.echo(f"  Prompts: {len(parsed)} files")
-
-    # Build folder tree
-    folder_tree = FolderParser.build_tree(prompt_root, parsed)
-    subgraph_count = _count_subgraphs(folder_tree)
-    click.echo(f"  Folders: {subgraph_count} subgraphs")
-
-    # Build graph
-    gb = GraphBuilder(
-        parsed_prompts=parsed,
-        folder_tree=folder_tree,
-        schema_registry=schemas,
-        source_registry=sources,
-        project_name=config.name,
-    )
-    graph_structure = gb.build_structure()
     target = loader.get_target_dir()
 
     # Generate manifest
-    manifest = generate_manifest(graph_structure, config)
     (target / "manifest.json").write_text(
         json.dumps(manifest, indent=2, default=str), encoding="utf-8"
     )
@@ -129,45 +83,18 @@ def run(selectors, exclude, thread_id, input_file, db_path, stream, verbose):
     project_root = _find_project_root()
     click.echo(f"Running project at {project_root}...")
 
-    from .project import ProjectLoader
-    from .compiler.schema_parser import SchemaParser
-    from .compiler.source_parser import SourceParser
-    from .compiler.jinja_env import AbtJinjaEnv
-    from .compiler.prompt_compiler import PromptCompiler
-    from .compiler.folder_parser import FolderParser
-    from .compiler.graph_builder import GraphBuilder
-    from .compiler.manifest_generator import generate_manifest
     from .compiler.selector import NodeSelector
     from .runtime.db import DatabaseManager
     from .runtime.tool_table import ToolTable
     from .runtime.executor import GraphExecutor
 
-    loader = ProjectLoader(project_root)
-    config = loader.load()
+    artifacts = _compile_project(project_root, full_refresh=False)
+    config = artifacts["config"]
+    loader = artifacts["loader"]
+    graph_structure = artifacts["graph_structure"]
+    manifest = artifacts["manifest"]
 
-    schemas = SchemaParser(loader).parse_all()
-    sources = SourceParser(loader).parse_all()
-
-    jinja_env = AbtJinjaEnv(
-        schema_registry=schemas, source_registry=sources,
-        project_vars=config.vars, macro_paths=loader.list_macro_files(),
-        strict=False,
-    )
-    prompt_compiler = PromptCompiler(jinja_env, defaults=config.models.get("default"))
-    prompt_files = loader.list_prompt_files()
-    prompt_root = project_root / config.paths.prompt_paths[0]
-    parsed = prompt_compiler.compile_all(prompt_files, prompt_root)
-    folder_tree = FolderParser.build_tree(prompt_root, parsed)
-
-    gb = GraphBuilder(
-        parsed_prompts=parsed, folder_tree=folder_tree,
-        schema_registry=schemas, source_registry=sources,
-        project_name=config.name,
-    )
-    graph_structure = gb.build_structure()
-
-    # Generate manifest
-    manifest = generate_manifest(graph_structure, config)
+    # Write manifest
     target = loader.get_target_dir()
     (target / "manifest.json").write_text(
         json.dumps(manifest, indent=2, default=str), encoding="utf-8"
@@ -193,6 +120,7 @@ def run(selectors, exclude, thread_id, input_file, db_path, stream, verbose):
     db.connect()
     click.echo(f"  Database: {db_path}")
 
+    sources = graph_structure.all_sources
     tool_table = ToolTable(sources, db)
     tool_table.build_all()
 
@@ -211,7 +139,43 @@ def run(selectors, exclude, thread_id, input_file, db_path, stream, verbose):
                              stream_callback=_stream_printer)
     click.echo(f"  Nodes: {len(graph_structure.all_nodes)}")
 
-    result = executor.execute(initial_input)
+    result = executor.execute(initial_input, thread_id=thread_id)
+
+    # HITL approval loop
+    while "__interrupt__" in result:
+        interrupt_info = result.pop("__interrupt__")
+        node_name = interrupt_info.get("node", "unknown")
+        output = interrupt_info.get("output", {})
+        message = interrupt_info.get("message", "Approve?")
+
+        click.echo(f"\n[HITL] {message}")
+        click.echo(f"  Node: {node_name}")
+        click.echo(f"  Output: {json.dumps(output, indent=4)}")
+
+        choice = click.prompt(
+            "Action (y=approve / n=reject / e=edit)",
+            type=click.Choice(["y", "n", "e"]),
+            default="y",
+        )
+        if choice == "y":
+            decision = {"action": "approve"}
+        elif choice == "n":
+            decision = {"action": "reject"}
+        else:  # choice == "e"
+            edit_input = click.edit(json.dumps(output, indent=2))
+            if edit_input:
+                try:
+                    edited = json.loads(edit_input)
+                    decision = {"action": "edit", "edited_output": edited}
+                except json.JSONDecodeError:
+                    click.echo("Invalid JSON, approving original output.")
+                    decision = {"action": "approve"}
+            else:
+                decision = {"action": "approve"}
+
+        click.echo("  Resuming...")
+        result = executor.resume(decision, thread_id=thread_id)
+
     node_outputs = result.get("node_outputs", {})
 
     click.echo("\nResults:")
@@ -228,40 +192,227 @@ def run(selectors, exclude, thread_id, input_file, db_path, stream, verbose):
 
 
 @cli.command()
-@click.option("--select", "-s", multiple=True, help="Test specific nodes")
-@click.option("--db-path", default=":memory:", help="SQLite database (in-memory default)")
-def test(select: tuple, db_path: str):
-    """Run tests defined in the project (schema validation, source connectivity)."""
-    project_root = _find_project_root()
-    click.echo(f"Testing project at {project_root}...")
+@click.option("--select", "-s", "selectors", multiple=True,
+              help="Test specific nodes (dbt-style)")
+@click.option("--exclude", multiple=True, help="Exclude nodes from testing")
+@click.option("--db-path", default=":memory:", help="SQLite database path")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed test output")
+def test(selectors, exclude, db_path, verbose):
+    """Run data assertions defined in .test.yml files.
 
+    Test files live alongside .prompt files and define assertions
+    that validate the semantic correctness of node outputs.
+
+    \\b
+    Example .test.yml:
+        tests:
+          - name: stock_not_negative
+            assert: quantity_on_hand >= 0
+          - name: location_not_empty
+            assert: location is not null
+    """
+    project_root = _find_project_root()
+
+    from .compiler.selector import NodeSelector
+    from .runtime.db import DatabaseManager
+    from .runtime.tool_table import ToolTable
+    from .runtime.executor import GraphExecutor
+    from .runtime.test_runner import TestRunner
+
+    artifacts = _compile_project(project_root, full_refresh=False)
+    config = artifacts["config"]
+    loader = artifacts["loader"]
+    graph_structure = artifacts["graph_structure"]
+    manifest = artifacts["manifest"]
+
+    target = loader.get_target_dir()
+    (target / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, default=str), encoding="utf-8"
+    )
+
+    # Apply selectors
+    node_selector = NodeSelector(manifest)
+    selected_names = node_selector.resolve_selectors(list(selectors) if selectors else None)
+    selected_names = node_selector.resolve_exclusions(selected_names, list(exclude) if exclude else None)
+
+    if selectors or exclude:
+        graph_structure = _filter_graph_structure(graph_structure, set(selected_names))
+
+    # Discover tests
+    prompt_root = project_root / config.paths.prompt_paths[0]
+    test_runner = TestRunner(prompt_root)
+    tests_by_node = test_runner.discover()
+
+    if test_runner.test_count == 0:
+        click.echo("No .test.yml files found.")
+        return
+
+    click.echo(f"  Tests: {test_runner.test_count} assertions across "
+               f"{len(tests_by_node)} nodes")
+
+    # Execute graph
+    db = DatabaseManager(db_path)
+    db.connect()
+
+    sources = graph_structure.all_sources
+    tool_table = ToolTable(sources, db)
+    tool_table.build_all()
+
+    executor = GraphExecutor(graph_structure, db, tool_table, llm_factory=None)
+    click.echo(f"  Nodes: {len(graph_structure.all_nodes)}")
+
+    result = executor.execute({})
+    node_outputs = result.get("node_outputs", {})
+
+    # Evaluate tests
+    all_results = []
+    for node_name in graph_structure.all_nodes:
+        output = node_outputs.get(node_name)
+        results = test_runner.evaluate(node_name, output)
+        all_results.extend(results)
+
+    # Report
+    passed = sum(1 for r in all_results if r.passed)
+    failed = sum(1 for r in all_results if not r.passed)
+
+    click.echo(f"\nResults: {passed} passed, {failed} failed, {len(all_results)} total\n")
+
+    for r in all_results:
+        if r.passed:
+            if verbose:
+                click.echo(f"  {r.node_name} :: {r.test_name} — PASS")
+        else:
+            click.echo(f"  {r.node_name} :: {r.test_name} — FAIL")
+            click.echo(f"    {r.message}")
+
+    if verbose:
+        click.echo(f"\nNode outputs:")
+        for node_name, output in node_outputs.items():
+            click.echo(f"  {node_name}:")
+            for key, val in output.items():
+                click.echo(f"    {key}: {val}")
+
+    executor.print_traces()
+    db.close()
+
+    if failed > 0:
+        click.echo(f"\n{failed} test(s) failed.")
+        raise SystemExit(1)
+    else:
+        click.echo("\nAll tests passed.")
+
+
+def _compile_project(project_root: Path, full_refresh: bool) -> dict:
+    """Compile the project, returning a dict with all build artifacts.
+
+    Uses incremental compilation when possible: only recompiles .prompt files
+    whose content has changed since the last run. Schema, source, macro, or
+    project config changes trigger a full rebuild.
+    """
     from .project import ProjectLoader
     from .compiler.schema_parser import SchemaParser
     from .compiler.source_parser import SourceParser
+    from .compiler.jinja_env import AbtJinjaEnv
+    from .compiler.prompt_compiler import PromptCompiler
+    from .compiler.folder_parser import FolderParser
+    from .compiler.graph_builder import GraphBuilder
+    from .compiler.manifest_generator import generate_manifest
+    from .compiler.cache_manager import CacheManager
 
     loader = ProjectLoader(project_root)
     config = loader.load()
 
-    # Test schemas parse and validate
-    schema_parser = SchemaParser(loader)
-    schemas = schema_parser.parse_all()
-    click.echo(f"  Schemas: {len(schemas)} models loaded")
+    click.echo(f"  Project: {config.name} v{config.version}")
 
-    for name, model_cls in schemas.items():
-        schema = model_cls.model_json_schema()
-        field_count = len(schema.get("properties", {}))
-        click.echo(f"    {name}: {field_count} fields")
+    schemas = SchemaParser(loader).parse_all()
+    click.echo(f"  Schemas: {len(schemas)} models")
 
-    # Test sources parse
-    source_parser = SourceParser(loader)
-    sources = source_parser.parse_all()
-    click.echo(f"  Sources: {len(sources)} sources loaded")
+    sources = SourceParser(loader).parse_all()
+    click.echo(f"  Sources: {len(sources)}")
 
-    for name, src in sources.items():
-        table_count = len(src.tables)
-        click.echo(f"    {name}: {table_count} tables ({src.type.value})")
+    jinja_env = AbtJinjaEnv(
+        schema_registry=schemas,
+        source_registry=sources,
+        project_vars=config.vars,
+        macro_paths=loader.list_macro_files(),
+        strict=False,
+    )
+    prompt_compiler = PromptCompiler(jinja_env, defaults=config.models.get("default"))
+    prompt_files = loader.list_prompt_files()
+    prompt_root = project_root / config.paths.prompt_paths[0]
+    prompt_rel = config.paths.prompt_paths[0]
 
-    click.echo("All tests passed.")
+    target_dir = loader.get_target_dir()
+    cache = CacheManager(target_dir)
+    previous = cache.load_previous_manifest() if not full_refresh else None
+
+    if previous is None:
+        if full_refresh:
+            click.echo(f"  Full refresh: recompiling all prompts")
+        else:
+            click.echo(f"  Compiling all prompts (no cache found)")
+        parsed = prompt_compiler.compile_all(prompt_files, prompt_root)
+        file_hashes = cache.compute_hashes(loader, prompt_root)
+    else:
+        prev_meta = previous.get("metadata", {})
+        prev_time = prev_meta.get("generated_at", "unknown")
+        click.echo(f"  Using cached manifest from {prev_time}")
+
+        changes = cache.detect_changes(loader, prompt_root, previous)
+
+        if changes["full_rebuild"]:
+            click.echo(f"  Full rebuild: {changes['reason']}")
+            parsed = prompt_compiler.compile_all(prompt_files, prompt_root)
+        else:
+            changed = changes["changed_qualified"]
+            unchanged = changes["unchanged_qualified"]
+
+            if not changed:
+                click.echo(f"  All {len(unchanged)} prompts unchanged — using cache")
+                parsed = cache.load_cached_prompts(
+                    unchanged, previous, project_root, prompt_rel
+                )
+            else:
+                click.echo(
+                    f"  Incremental: {len(changed)} changed, {len(unchanged)} cached"
+                )
+                changed_files = [
+                    f for f in prompt_files
+                    if str(f.relative_to(prompt_root).with_suffix("")).replace("\\", "/")
+                    in changed
+                ]
+                parsed_new = prompt_compiler.compile_all(changed_files, prompt_root)
+                parsed_cached = cache.load_cached_prompts(
+                    unchanged, previous, project_root, prompt_rel
+                )
+                parsed = {**parsed_new, **parsed_cached}
+
+        file_hashes = changes.get("current_hashes",
+                                  cache.compute_hashes(loader, prompt_root))
+
+    click.echo(f"  Prompts: {len(parsed)} files")
+
+    folder_tree = FolderParser.build_tree(prompt_root, parsed)
+    subgraph_count = _count_subgraphs(folder_tree)
+    click.echo(f"  Folders: {subgraph_count} subgraphs")
+
+    gb = GraphBuilder(
+        parsed_prompts=parsed,
+        folder_tree=folder_tree,
+        schema_registry=schemas,
+        source_registry=sources,
+        project_name=config.name,
+    )
+    graph_structure = gb.build_structure()
+    manifest = generate_manifest(graph_structure, config, file_hashes)
+
+    return {
+        "config": config,
+        "loader": loader,
+        "graph_structure": graph_structure,
+        "graph_builder": gb,
+        "manifest": manifest,
+    }
 
 
 def _find_project_root() -> Path:

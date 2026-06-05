@@ -12,8 +12,15 @@ class CTEParser:
         re.DOTALL,
     )
 
-    # Match "name AS (" — start of a CTE block (multi-line or single-line)
+    # Match "name AS TYPE (" — start of a CTE block. TYPE is TOOL or LLM, optional.
+    # Group 1: name, Group 2: type (TOOL|LLM|None), Group 3: content after opening paren
     CTE_START = re.compile(
+        r'^(?:WITH\s+)?(\w+)\s+AS\s+(TOOL|LLM)\s*\((.*)$',
+        re.MULTILINE | re.IGNORECASE,
+    )
+
+    # Fallback: "name AS (" without type (backward compat)
+    CTE_START_LEGACY = re.compile(
         r'^(?:WITH\s+)?(\w+)\s+AS\s*\((.*)$',
         re.MULTILINE | re.IGNORECASE,
     )
@@ -128,19 +135,29 @@ class CTEParser:
         i = 0
         while i < len(lines):
             line = lines[i].strip()
+            cte_name = None
+            cte_type = None
+            after_paren = None
+
+            # Try new explicit syntax first: name AS TOOL|LLM (...)
             cte_match = cls.CTE_START.match(line)
             if cte_match:
                 cte_name = cte_match.group(1)
-                after_paren = cte_match.group(2)
+                cte_type = cte_match.group(2).lower()
+                after_paren = cte_match.group(3)
+            else:
+                # Fallback: legacy syntax name AS (...)
+                legacy_match = cls.CTE_START_LEGACY.match(line)
+                if legacy_match:
+                    cte_name = legacy_match.group(1)
+                    after_paren = legacy_match.group(2)
 
+            if cte_name:
                 # Check if this is a single-line CTE: content and closing paren on same line
                 if after_paren and ")" in after_paren:
                     # Single-line CTE: everything between ( and ) is content
                     content_part = after_paren.rsplit(")", 1)[0]
                     raw = content_part.strip()
-                    # Handle trailing comma after closing paren
-                    if after_paren.rstrip().endswith("),"):
-                        pass  # comma is outside the paren, already handled
                 else:
                     # Multi-line CTE
                     depth = 1
@@ -157,7 +174,7 @@ class CTEParser:
                         i += 1
                     raw = "\n".join(cte_lines).strip()
 
-                ctes.append(CTEBlock(name=cte_name, raw_content=raw))
+                ctes.append(CTEBlock(name=cte_name, raw_content=raw, cte_type=cte_type))
             elif cls.SELECT_START.match(line):
                 # Collect SELECT columns
                 i += 1

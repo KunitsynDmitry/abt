@@ -35,8 +35,17 @@ class PromptCompiler:
         for cte in cte_blocks:
             rendered = self.jinja_env.render(cte.raw_content, context)
             cte.rendered_content = rendered
-            is_tool, tools, refs = CTEParser.detect_cte_type(rendered)
-            cte.is_tool_step = is_tool
+
+            # Determine cte_type: explicit syntax takes priority, else detect
+            if cte.cte_type is None:
+                is_tool, tools, refs = CTEParser.detect_cte_type(rendered)
+                cte.is_tool_step = is_tool
+                cte.cte_type = "tool" if is_tool else "llm"
+            else:
+                # Explicit type — still need to extract refs from rendered content
+                _, tools, refs = CTEParser.detect_cte_type(rendered)
+                cte.is_tool_step = cte.cte_type == "tool"
+
             cte.tool_refs = tools
             cte.model_refs = refs
             all_refs.update(refs)

@@ -2,8 +2,9 @@
 
 Inspired by dbt. Compiles declarative `.prompt` files + YAML schemas into LangGraph agents with SQLite persistence.
 
-> **CONTINUE:** v0.4.0 (Selectors) done. Next is **incremental compilation**.
-> Selectors implemented: `abt run --select +name+ --exclude tag:xxx`. See `abt/compiler/selector.py`.
+> **CONTINUE:** v0.7.0 — #1-#5 + #7a done. Next is **#5 Incremental execution** (runtime cache).
+> Incremental: `abt compile` skips unchanged files. `--full-refresh` forces rebuild. See `abt/compiler/cache_manager.py`.
+> **IMPROVEMENTS:** See [IMPROVEMENTS.md](IMPROVEMENTS.md) — architectural review & prioritized roadmap (7 items, 2026-06-05).
 
 ## Key Commands
 
@@ -62,19 +63,22 @@ abt/
 │   ├── folder_parser.py        # Dir tree → SubgraphDef with routing
 │   ├── graph_builder.py        # SubgraphDef+CompiledNode → StateGraph + Python codegen
 │   ├── manifest_generator.py   # GraphStructure+AbtProjectConfig → manifest.json
-│   └── selector.py             # dbt-style node selection (+name+, tag:, path:, glob)
+│   ├── selector.py             # dbt-style node selection (+name+, tag:, path:, glob)
+│   ├── fingerprint.py          # SHA256 file hashing for incremental compilation
+│   └── cache_manager.py        # Loads prev manifest, detects staleness, merges cache
 ├── runtime/        # Execution layer
 │   ├── db.py              # DatabaseManager: SQLite DDL + trace/cache CRUD
 │   ├── tool_table.py      # SourceDefinition → callable Python tools
 │   ├── mcp_client.py      # McpConnection + McpManager — persistent MCP stdio
-│   ├── node_runner.py     # CTE loop, retries, ref resolution, output mapping
-│   └── executor.py        # GraphExecutor: topological sort, execution, traces
+│   ├── node_runner.py     # CTE loop, retries, ref resolution, output mapping, Pydantic validation
+│   ├── test_runner.py     # .test.yml discovery, safe eval assertions, TestResult
+│   └── executor.py        # GraphExecutor: topological sort, execution, traces, dynamic routing
 ├── cli.py          # Click CLI: init, compile, run, test
 ├── project.py      # ProjectLoader: reads abt_project.yml, discovers files
 └── exceptions.py   # Custom exception hierarchy
 ```
 
-## What's built (v0.3.5 — Manifest file)
+## What's built (v0.5.0 — Incremental compilation)
 
 - [x] Full CLI (init, compile, run, test) — all wired to real pipeline
 - [x] YAML schema → dynamic Pydantic with enum/constraint validation
@@ -83,30 +87,24 @@ abt/
 - [x] CTE parser (multi-line, single-line, tool-step detection)
 - [x] Folder routing parser (require_all, require_any, metadata, prompt_root-aware node keys)
 - [x] Graph builder + dependency resolution + Python codegen (routing-aware: `_flatten_blocks()` + `_wire_blocks()`)
-- [x] SQLite persistence (agent_runs, llm_traces, tool_results, node_executions) — thread-safe with `check_same_thread=False` + `threading.Lock()`
+- [x] SQLite persistence (agent_runs, llm_traces, tool_results, node_executions)
 - [x] Node runner with CTE execution, retries, SELECT-ref resolution
-- [x] **Real LangGraph StateGraph** — `GraphExecutor.execute()` builds `StateGraph(AbtState)`, wires edges via `_flatten_tree()` + `_wire_blocks()`, uses `Annotated` reducers for dict merge / list concat. `execute_sequential()` kept as fallback.
-- [x] **Parallel execution for require_all** — fan-out to all children, fan-in via LangGraph's natural AND-gate (multiple incoming edges)
-- [x] **OR-gate for require_any** — fan-out to all children, collector node picks first success, all-fail → error
-- [x] **Real LLM calls via OpenAI-compatible API (DeepSeek)** — `_execute_llm_cte` calls `openai.OpenAI` client, logs traces via `db.log_llm_call`, parses JSON from response
-- [x] **Project-level model defaults** — `models.default` in `abt_project.yml` sets fallback model/temperature/max_tokens; `{{ config(...) }}` in `.prompt` overrides per-file; `llm_factory` in code overrides everything
+- [x] Real LangGraph StateGraph with Annotated reducers
+- [x] Parallel execution (require_all) + OR-gate (require_any with collector)
+- [x] Real LLM calls via OpenAI-compatible API (DeepSeek)
+- [x] Project-level model defaults + per-file config overrides
 - [x] Example project (inventory agent: 5 prompts, 4 schemas, 2 sources)
-- [x] Generated Python code runs standalone with correct execution order
-- [x] **Nested subgraph compilation** — folders with REQUIRE_ALL/REQUIRE_ANY become compiled LangGraph StateGraphs. `_flatten_tree` produces recursive blocks (parallel/any with children). `_build_blocks_in_graph` recursively builds child StateGraphs, compiles them, adds as nodes in parent. SEQUENTIAL folders stay inline. 3-level nesting tested.
-- [x] **MCP client** — `McpConnection` with persistent background asyncio loop, `McpManager` pool, lazy connect on first tool call, SQLite caching like REST tools. Replaces stub `{"status": "mcp_not_connected"}`.
-- [x] **Token streaming** — `abt run --stream` prints LLM tokens in real-time via callback pattern (`CLI → GraphExecutor → NodeRunner → _execute_llm_cte`). Uses `create(stream=True)`, emits `cte_start`/`token`/`cte_end` events. `--no-stream` preserves original non-streaming path.
-- [x] **Manifest file** — `manifest.json` artifact. `generate_manifest(GraphStructure, AbtProjectConfig)` in `abt/compiler/manifest_generator.py`. Five sections: metadata, nodes, sources, schemas, graph (routing tree + deps + topological order), project.
-- [x] All 5 test suites pass (integration, phase4, phase5, generated_python, nested_subgraphs, selectors)
-
-## What's NOT built (next priorities)
-
-- [x] **require_any with collector node** — true OR-gate: fan-out, collector picks first success, all-fail → error
-- [x] **Nested subgraph compilation** — folders → compiled LangGraph StateGraphs, added as nodes via `sg.add_node(name, compiled_subgraph)`. SEQUENTIAL stays inline, REQUIRE_ALL/REQUIRE_ANY become nested blocks with children. Deep nesting (3+ levels) works.
-- [x] **MCP client** — persistent stdio connection via `McpConnection` + `McpManager`, replaces stub. Background daemon thread with asyncio loop, `run_coroutine_threadsafe` bridge, SQLite-cached results.
-- [x] **Token streaming** — callback pattern: `CLI → GraphExecutor → NodeRunner → _execute_llm_cte`. `create(stream=True)`, events: `cte_start`/`token`/`cte_end`.
-- [x] **Manifest file** — `manifest.json` artifact: metadata, nodes (CTE blocks, deps, tools), sources, schemas (fields + JSON Schema), graph (routing tree + deps + topo order), project config. Generated by `generate_manifest()` in `abt/compiler/manifest_generator.py`. Wired into `abt compile` and `abt run`.
-- [x] **dbt-style selectors** — `abt run --select +name+ --exclude tag:xxx`. `NodeSelector` in `abt/compiler/selector.py` uses manifest.json as source of truth. Supports: exact name, leaf name, `+` ancestors, `+` descendants, `tag:`, `path:`, `source:`, glob patterns. Union via multiple `--select` values, exclusion via `--exclude`. Filters `GraphStructure` before execution.
-- [ ] Incremental compilation
+- [x] Nested subgraph compilation (3-level nesting tested)
+- [x] MCP client with persistent stdio connections + SQLite caching
+- [x] Token streaming (callback pattern: CLI → Executor → NodeRunner → LLM)
+- [x] Manifest file (manifest.json: 7 sections including file_hashes)
+- [x] dbt-style selectors (`+name+`, `tag:`, `path:`, `source:`, glob, `--exclude`)
+- [x] **Incremental compilation** — manifest.json as cache, SHA256 fingerprints, conservative invalidation, `--full-refresh`
+- [x] **Pydantic output validation** — `node_runner.py` validates LLM output against `output_schema_type`, feeds errors back on retry
+- [x] **Compile-time ref() contracts** — `graph_builder.py` raises `GraphBuildError` on unresolved `ref('X')`
+- [x] **Explicit CTE types** — `AS TOOL` / `AS LLM` syntax, `CTEBlock.cte_type` field, backward-compatible legacy detection
+- [x] **`abt test`** — `.test.yml` data assertions with safe eval, `TestRunner`, 3 example test files (8 assertions)
+- [x] **Dynamic routing** — `route_on`/`route_when`/`route_default` in config, `add_conditional_edges` in executor, compile-time target resolution
 
 ## LLM Setup
 
@@ -140,9 +138,118 @@ A dbt analytics engineer exploring AI agent development. Deep understanding of d
 
 ## Current state (2026-06-05)
 
-v0.4.0 — dbt-style selectors done. `abt run --select +name+ --exclude tag:xxx`. `NodeSelector` in `abt/compiler/selector.py` uses manifest.json as source of truth. Supports: exact name, leaf name, `+` ancestors/descendants, `tag:`, `path:`, `source:`, glob patterns. Union via multiple `--select`, exclusion via `--exclude`. Filters `GraphStructure` before execution. All 6 test suites pass.
+v0.7.0 — 6 improvements from IMPROVEMENTS.md done. `manifest.json` doubles as compilation cache. All 6 test suites pass (24+ tests).
 
-Next: **incremental compilation**.
+**Completed (this session):**
+- #7a Human-in-the-loop — `interrupt()` approval gates via `approve_when`/`approve_message` in config
+
+**Completed (previous):**
+- #1 Pydantic output validation — `node_runner.py:92-103`, validates against `output_schema_type`, feeds errors back on retry
+- #2 Compile-time ref() contracts — `graph_builder.py:52-57`, `GraphBuildError` on unresolved `ref('X')`
+- #3 Explicit CTE types — `AS TOOL` / `AS LLM` syntax, `CTEBlock.cte_type`, backward-compatible
+- #4 `abt test` — `.test.yml` data assertions, `TestRunner` with safe eval, 8 assertions in example project
+- #5 Dynamic routing — `route_on`/`route_when`/`route_default`, `add_conditional_edges`, compile-time target resolution
+
+**Next: #5 Incremental execution** (runtime cache, 3-4h).
+**Remaining:** #7c Native streaming, #6 Remove codegen.
+
+### New features detail
+
+**Pydantic validation** (`node_runner.py:92-103`):
+```
+After CTE loop: schema_cls = node.output_schema_type
+→ validated = schema_cls(**output) → output = validated.model_dump()
+→ on failure: validation_feedback passed to _execute_llm_cte on next attempt
+→ LLM sees "Previous output failed validation: ..." and self-corrects
+```
+
+**Compile-time ref() contracts** (`graph_builder.py:52-57`):
+```
+ref('nonexistent') → GraphBuildError at compile time
+All refs validated: CTE blocks + system prompt
+```
+
+**Explicit CTE types** (`cte_parser.py:16-24`, `prompt_compiler.py:40-48`):
+```sql
+WITH fetch_inventory AS TOOL (...)   -- API call, forever cacheable
+gap_analysis AS LLM (...)            -- LLM call, never cacheable
+```
+Legacy `AS (...)` without type → fallback to `detect_cte_type()`.
+
+**abt test** (`runtime/test_runner.py`):
+```yaml
+# check_stock.test.yml
+tests:
+  - name: stock_not_negative
+    assert: quantity_on_hand >= 0
+  - name: location_not_empty
+    assert: location is not null
+```
+```bash
+abt test                    # All tests
+abt test --select check_stock  # Specific node
+```
+Safe eval: restricted `__builtins__` (no `__import__`, `open`, etc).
+
+**Dynamic routing** (`executor.py:263-290`):
+```
+{{ config(
+    route_on="priority",
+    route_when=["high:escalate", "medium:auto_order"],
+    route_default="__END__"
+) }}
+```
+At runtime: `state["node_outputs"][node_name]["priority"]` → value looked up in `route_map` → `add_conditional_edges` routes to target node or END. Failed nodes fall through to default/END.
+
+**Human-in-the-loop** (`node_runner.py:105-143`, `executor.py:77-130`, `cli.py:142-168`):
+```
+{{ config(approve_when="total_order_cost > 5000", approve_message="Large order") }}
+```
+At runtime, after Pydantic validation, `approve_when` is evaluated as a Python expression against the output dict (safe eval, same builtins as `abt test`). If truthy → `interrupt()` pauses the graph. CLI shows output and prompts: approve (y) / reject (n) / edit (e). Reject returns error; edit opens $EDITOR for JSON modification. `MemorySaver` persists state across the pause. `resume()` continues with `Command(resume=decision)`.
+
+Config fields:
+- `approve_when: str = ""` — Python expression (e.g. `"total > 100 and priority == 'high'"`)
+- `approve_message: str = ""` — optional custom prompt; defaults to "Approve output for 'node_name'?"
+
+Flow: `execute()` → `GraphInterrupt` caught → return `{"__interrupt__": {...}}` → CLI approval loop → `resume(decision)` → final result. Nodes without `approve_when` run normally (zero overhead — `interrupt()` never called).
+
+### Incremental compilation architecture (v0.5.0)
+
+```
+CacheManager(manifest.json)
+  ├── load_previous_manifest() → prev dict or None
+  ├── compute_hashes(loader, prompt_root) → {key: sha256}
+  │   Global keys: __project__, __macros__, __schemas__, __sources__
+  │   Prompt keys: qualified_name → hash
+  └── detect_changes(loader, prompt_root, previous) → {
+        full_rebuild: bool,
+        reason: str | None,
+        changed_qualified: set[str],
+        unchanged_qualified: set[str],
+        current_hashes: dict,
+      }
+```
+
+**Invalidation rules:**
+
+| Change | Action |
+|--------|--------|
+| `.prompt` file content | Recompile only that file |
+| `.jinja` macro (any) | Full rebuild (macros shared) |
+| `.yml` schema (any) | Full rebuild (schemas shared) |
+| `.yml` source (any) | Full rebuild (sources shared) |
+| `abt_project.yml` | Full rebuild |
+| File added/removed | Full rebuild (structure changed) |
+
+**Flow:**
+1. Load previous `manifest.json` (if exists and not `--full-refresh`)
+2. Compute SHA256 of all source files
+3. Compare `file_hashes`: global keys first, then per-prompt
+4. If global invalidation → `compile_all()` as usual
+5. Otherwise → `compile_all(changed_files_only)` + `load_cached_prompts(unchanged)` from manifest nodes
+6. Merge, rebuild folder tree, regenerate manifest + Python code
+
+**Key files:** `fingerprint.py:1-14` (hash_file, hash_file_list), `cache_manager.py:1-140` (CacheManager), `manifest_generator.py:1-35` (generate_manifest with file_hashes param, load_manifest), `cli.py:195-305` (_compile_project helper).
 
 ### Nested subgraph architecture (v0.3.2)
 
@@ -175,21 +282,22 @@ When set → `create(stream=True)`, iterate chunks, accumulate for SQLite, callb
 
 Key files: `node_runner.py:146,195-228`, `executor.py:53,59,111,210`, `cli.py:168-177`.
 
-### Manifest architecture (v0.3.5)
+### Manifest architecture (v0.5.0 — now includes file_hashes)
 
-Generated by `generate_manifest(GraphStructure, AbtProjectConfig)` → `target/manifest.json`.
+Generated by `generate_manifest(GraphStructure, AbtProjectConfig, file_hashes)` → `target/manifest.json`.
 
 **Sections:**
 | Section | Source | Key fields |
 |---------|--------|------------|
 | metadata | config + counts | project_name, version, generated_at, abt_version, node/source/schema counts, total_cte_blocks |
+| file_hashes | CacheManager | __project__, __macros__, __schemas__, __sources__ (combined), + per-prompt qualified_name → SHA256 |
 | nodes | CompiledNode + ParsedPrompt | qualified_name, file_path, config, system_prompt, cte_blocks[], output_columns, dependencies[], source_refs[], resolved_tools[], output_schema, on_fail_target |
 | sources | SourceDefinition | type, description, config, tables[] |
 | schemas | Pydantic model_cls | fields[] (name, type, description, required), json_schema (full JSON Schema) |
 | graph | SubgraphDef + dep_graph | routing_tree (via `_subgraph_to_dict`), dependency_graph (sets→sorted lists), topological_order (Kahn's algorithm) |
 | project | AbtProjectConfig | name, version, paths, models, vars |
 
-**Key files:** `manifest_generator.py:1-140` (generate_manifest, _serialize_node, _serialize_schema, _topological_sort), `cli.py:57,99-109` (compile wiring), `cli.py:128,164-170` (run wiring).
+**Key files:** `manifest_generator.py:1-160` (generate_manifest with file_hashes param, load_manifest, _serialize_node, _serialize_schema, _topological_sort), `cache_manager.py:1-140` (CacheManager.compute_hashes, _prompt_from_manifest_node).
 
 ## Key files for the example project
 

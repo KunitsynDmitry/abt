@@ -1,0 +1,7 @@
+tests:
+  - name: stock_not_negative
+    assert: quantity_on_hand >= 0
+  - name: location_not_empty
+    assert: location is not None
+  - name: in_stock_consistent
+    assert: (in_stock == True) == (quantity_on_hand > 0)
