@@ -59,14 +59,12 @@ class GraphExecutor:
         db: DatabaseManager,
         tool_table: ToolTable | None = None,
         llm_factory: Callable[[], Any] | None = None,
-        stream_callback: Callable[[str, str, str, str], None] | None = None,
         use_cache: bool = True,
     ):
         self.structure = graph_structure
         self.db = db
         self.tool_table = tool_table
         self.llm_factory = llm_factory
-        self.stream_callback = stream_callback
         self._use_cache = use_cache
         self._checkpointer = MemorySaver()
         self._app = None
@@ -143,6 +141,62 @@ class GraphExecutor:
         self.db.complete_run(self._run_id, status="completed", final_state=dict(result))
         return dict(result)
 
+    def execute_stream(self, initial_input: dict[str, Any] | None = None,
+                       thread_id: str | None = None):
+        """Execute with native LangGraph streaming via astream_events.
+
+        Uses ``app.stream(stream_mode="custom")`` so node functions can emit
+        events through ``get_stream_writer()``. Yields structured event dicts:
+
+            {"type": "event", "data": {"event": "token", "node": ..., "cte": ..., "delta": ...}}
+            {"type": "interrupt", "data": {...}}
+            {"type": "final", "data": {...}}
+
+        Node boundaries (start/end) and LLM token chunks are captured
+        without a custom callback chain.
+        """
+        initial_input = initial_input or {}
+        run_id = self.db.create_run(project_name=self.structure.project_name)
+        self._run_id = run_id
+
+        sg = self._build_state_graph()
+        app = sg.compile(checkpointer=self._checkpointer)
+        self._app = app
+
+        config = {"configurable": {"thread_id": thread_id or "default"}}
+        self._config = config
+
+        init_state = {
+            "messages": [],
+            NODE_OUTPUTS_KEY: {},
+            ERRORS_KEY: [],
+            "_run_id": run_id,
+            **initial_input,
+        }
+
+        final_state: dict[str, Any] = dict(init_state)
+        try:
+            for mode, chunk in app.stream(init_state, config,
+                                          stream_mode=["updates", "custom"]):
+                if mode == "custom":
+                    yield {"type": "event", "data": chunk}
+                elif mode == "updates":
+                    # chunk is {node_name: state_update} — merge each node's update
+                    for node_name, node_update in chunk.items():
+                        if NODE_OUTPUTS_KEY in node_update:
+                            final_state.setdefault(NODE_OUTPUTS_KEY, {}).update(
+                                node_update[NODE_OUTPUTS_KEY])
+                        if ERRORS_KEY in node_update:
+                            final_state.setdefault(ERRORS_KEY, []).extend(
+                                node_update[ERRORS_KEY])
+        except GraphInterrupt as e:
+            interrupt_data = e.args[0] if e.args else {}
+            yield {"type": "interrupt", "data": interrupt_data}
+            return
+
+        self.db.complete_run(run_id, status="completed", final_state=final_state)
+        yield {"type": "final", "data": final_state}
+
     def execute_sequential(self, initial_input: dict[str, Any]) -> dict[str, Any]:
         """Execute all nodes in dependency order (simplified sequential mode).
 
@@ -163,7 +217,7 @@ class GraphExecutor:
         for node_name in ordered:
             node = self.structure.all_nodes[node_name]
             tools = self.tool_table.get_tools_for_node(node.resolved_tools) if self.tool_table else []
-            runner = NodeRunner(node, tools, self.db, llm_factory=self.llm_factory, stream_callback=self.stream_callback, use_cache=self._use_cache)
+            runner = NodeRunner(node, tools, self.db, llm_factory=self.llm_factory, use_cache=self._use_cache)
             node_fn = runner.make_node_function()
 
             update = node_fn(state)
@@ -262,7 +316,7 @@ class GraphExecutor:
             if self.tool_table
             else []
         )
-        runner = NodeRunner(compiled_node, tools, self.db, llm_factory=self.llm_factory, stream_callback=self.stream_callback, use_cache=self._use_cache)
+        runner = NodeRunner(compiled_node, tools, self.db, llm_factory=self.llm_factory, use_cache=self._use_cache)
         node_fn = runner.make_node_function()
         sg.add_node(node_name, node_fn)
 

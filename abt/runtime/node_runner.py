@@ -20,7 +20,6 @@ class NodeRunner:
         tools: list[Callable],
         db: DatabaseManager,
         llm_factory: Callable[[], OpenAI] | None = None,
-        stream_callback: Callable[[str, str, str, str], None] | None = None,
         use_cache: bool = True,
     ):
         self.node = compiled_node
@@ -28,7 +27,6 @@ class NodeRunner:
         self.db = db
         self._llm_factory = llm_factory
         self._llm_client: OpenAI | None = None
-        self._stream_callback = stream_callback
         self._use_cache = use_cache
         self._tool_call_pattern = re.compile(r"__SOURCE__(\w+)\.(\w+)__")
 
@@ -53,7 +51,6 @@ class NodeRunner:
         tools = self.tools
         db = self.db
         get_llm = self._get_llm
-        stream_callback = self._stream_callback
         use_cache = self._use_cache
 
         def node_fn(state: dict) -> dict:
@@ -85,7 +82,6 @@ class NodeRunner:
                             cte_results[cte.name] = _execute_llm_cte(
                                 cte, cte_results, state, node,
                                 get_llm(), db, run_id,
-                                stream_callback=stream_callback,
                                 validation_feedback=validation_feedback,
                             )
 
@@ -230,7 +226,7 @@ def _execute_tool_cte(cte, cte_results, tools, db, run_id):
 
 
 def _execute_llm_cte(cte, cte_results, state, node, llm_client, db, run_id,
-                     stream_callback=None, validation_feedback=None):
+                     validation_feedback=None):
     context_parts: dict[str, Any] = {}
 
     if cte_results:
@@ -279,12 +275,19 @@ def _execute_llm_cte(cte, cte_results, state, node, llm_client, db, run_id,
 
     # Call LLM
     model_name = config.model if config.model else "deepseek-chat"
+    node_name = node.qualified_name
+    cte_name = cte.name
     t0 = time.time()
 
-    if stream_callback is not None:
-        node_name = node.qualified_name
-        cte_name = cte.name
-        stream_callback(node_name, cte_name, "", "cte_start")
+    # Use LangGraph's native streaming via get_stream_writer()
+    try:
+        from langgraph.config import get_stream_writer
+        writer = get_stream_writer()
+    except RuntimeError:
+        writer = None
+
+    if writer is not None:
+        writer({"event": "cte_start", "node": node_name, "cte": cte_name})
 
         stream = llm_client.chat.completions.create(
             model=model_name,
@@ -299,12 +302,14 @@ def _execute_llm_cte(cte, cte_results, state, node, llm_client, db, run_id,
             delta = chunk.choices[0].delta
             if delta.content:
                 accumulated.append(delta.content)
-                stream_callback(node_name, cte_name, delta.content, "token")
+                writer({"event": "token", "node": node_name, "cte": cte_name,
+                        "delta": delta.content})
 
         content = "".join(accumulated)
         latency_ms = int((time.time() - t0) * 1000)
         usage = None
-        stream_callback(node_name, cte_name, content, "cte_end")
+        writer({"event": "cte_end", "node": node_name, "cte": cte_name,
+                "content": content})
     else:
         response = llm_client.chat.completions.create(
             model=model_name,

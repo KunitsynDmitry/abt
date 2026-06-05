@@ -160,27 +160,6 @@ def test_nested_graph_execution():
         print("OK: nested graph execution")
 
 
-def test_nested_generated_code():
-    """Verify generated Python code for nested structure is valid and runs."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        base = Path(tmpdir)
-        parsed, tree = build_nested_project(base)
-
-        gb = GraphBuilder(parsed_prompts=parsed, folder_tree=tree, project_name="test")
-        structure = gb.build_structure()
-
-        target = base / "target"
-        code = gb.generate_python_code(structure, target / "compiled_graph.py")
-
-        # Must be valid Python
-        compile(code, "compiled_graph.py", "exec")
-        assert "def _flatten_blocks" in code
-        assert 'children' in code  # Nested block structure
-        assert "def _build_graph_recursive" in code
-
-        print("OK: generated code is valid Python with recursive subgraph support")
-
-
 def test_deeply_nested():
     """Verify three-level nesting: require_all > require_any > sequential > leaves."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -258,6 +237,5 @@ def test_deeply_nested():
 if __name__ == "__main__":
     test_flatten_tree_nested()
     test_nested_graph_execution()
-    test_nested_generated_code()
     test_deeply_nested()
     print("\n=== All nested subgraph tests PASSED ===")

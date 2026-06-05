@@ -71,10 +71,6 @@ SELECT result FROM attempt
         for name, deps in structure.dependency_graph.items():
             print(f"  Deps: {name} -> {deps}")
 
-        target = Path(tmpdir) / "target"
-        code = gb.generate_python_code(structure, target / "compiled_graph.py")
-        print(f"\nGenerated: {len(code)} chars at target/compiled_graph.py")
-        print(f"Lines: {len(code.splitlines())}")
         print("OK: Phase 4 smoke test passed")
 
 

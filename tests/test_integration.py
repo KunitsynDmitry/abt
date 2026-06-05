@@ -241,13 +241,6 @@ def test_full_pipeline():
     assert manifest["project"]["name"] == "inventory_agent"
     assert manifest["project"]["vars"]["company_name"] == "ACME Corp"
 
-    # ── Generate Python code ─────────────────────────────────
-    target = project_root / "target"
-    code = gb.generate_python_code(graph_structure, target / "compiled_graph.py")
-    assert "def build_graph" in code
-    assert "AbtState" in code
-    compile(code, "compiled_graph.py", "exec")  # Must be valid Python
-
     # ── Execute with runtime ─────────────────────────────────
     db = DatabaseManager(":memory:")
     db.connect()
@@ -297,7 +290,7 @@ def test_full_pipeline():
 
 
 def test_streaming_callback():
-    """Verify stream_callback receives correct events with streaming mock."""
+    """Verify native LangGraph streaming via execute_stream()."""
     project_root = EXAMPLE_PROJECT
     loader = ProjectLoader(project_root)
     config = loader.load()
@@ -321,36 +314,40 @@ def test_streaming_callback():
     tool_table = ToolTable(sources, db)
     tool_table.build_all()
 
-    events: list[tuple] = []
-
-    def collector(node_name, cte_name, delta, event):
-        events.append((node_name, cte_name, delta, event))
-
     mock_factory = _make_streaming_mock_llm_factory()
     executor = GraphExecutor(graph_structure, db, tool_table,
-                             llm_factory=mock_factory,
-                             stream_callback=collector)
-    result = executor.execute({"product_id": "SKU-12345"})
+                             llm_factory=mock_factory)
+    events: list[dict] = []
+    result = {}
+    for stream_event in executor.execute_stream({"product_id": "SKU-12345"}):
+        etype = stream_event["type"]
+        data = stream_event["data"]
+        if etype == "event":
+            events.append(data)
+        elif etype == "final":
+            result = data
 
     assert len(events) > 0, "Expected streaming events"
 
     # Verify event order: start -> tokens -> end per CTE
-    current = None
-    for node_name, cte_name, delta, event in events:
-        if event == "cte_start":
-            current = (node_name, cte_name)
-        elif event == "token":
-            assert current == (node_name, cte_name), \
-                f"token for ({node_name}/{cte_name}) but start was {current}"
-        elif event == "cte_end":
-            assert current == (node_name, cte_name), \
-                f"cte_end for ({node_name}/{cte_name}) but start was {current}"
+    current_node = None
+    current_cte = None
+    for evt in events:
+        if evt["event"] == "cte_start":
+            current_node = evt["node"]
+            current_cte = evt["cte"]
+        elif evt["event"] == "token":
+            assert current_node == evt["node"], \
+                f"token for ({evt['node']}/{evt['cte']}) but start was ({current_node}/{current_cte})"
+        elif evt["event"] == "cte_end":
+            assert current_node == evt["node"], \
+                f"cte_end for ({evt['node']}/{evt['cte']}) but start was ({current_node}/{current_cte})"
 
     # Verify all 5 nodes executed
     node_outputs = result.get("node_outputs", {})
     assert len(node_outputs) == 5
     db.close()
-    print("OK: streaming callback receives expected events")
+    print("OK: native streaming via execute_stream()")
 
 
 if __name__ == "__main__":

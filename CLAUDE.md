@@ -2,9 +2,7 @@
 
 Inspired by dbt. Compiles declarative `.prompt` files + YAML schemas into LangGraph agents with SQLite persistence.
 
-> **CONTINUE:** v0.9.0 — #1-#5 + #7 + #7a + #8b done. Next is **#8c Native streaming** or **#6 Remove codegen**.
-> Incremental: both compile (`abt compile --full-refresh`) and runtime (`abt run --refresh`) skip unchanged work.
-> **IMPROVEMENTS:** See [IMPROVEMENTS.md](IMPROVEMENTS.md) — architectural review & prioritized roadmap (8 of 10 done, 2026-06-05).
+> **v1.0.0** — Manifest.json is the single compilation artifact. Incremental: both compile (`abt compile --full-refresh`) and runtime (`abt run --refresh`) skip unchanged work.
 
 ## Key Commands
 
@@ -17,7 +15,6 @@ python -c "from abt.cli import cli; cli(['run', '--refresh'], standalone_mode=Fa
 python -c "from abt.cli import cli; cli(['run', '--trigger', 'daily_check'], standalone_mode=False)"
 python -c "from abt.cli import cli; cli(['test'], standalone_mode=False)"
 python -c "from abt.cli import cli; cli(['serve', '--port', '8000'], standalone_mode=False)"
-python example_project/target/compiled_graph.py   # Standalone generated code
 ```
 
 Run tests:
@@ -25,7 +22,6 @@ Run tests:
 python tests/test_integration.py
 python tests/test_phase4_smoke.py
 python tests/test_phase5_smoke.py
-python tests/test_generated_python.py
 python tests/test_nested_subgraphs.py
 python tests/test_selectors.py
 python tests/test_triggers.py
@@ -68,7 +64,7 @@ abt/
 │   ├── cte_parser.py           # WITH...AS extraction, SELECT parsing
 │   ├── prompt_compiler.py      # .prompt → ParsedPrompt (full pipeline)
 │   ├── folder_parser.py        # Dir tree → SubgraphDef with routing
-│   ├── graph_builder.py        # SubgraphDef+CompiledNode → StateGraph + Python codegen
+│   ├── graph_builder.py        # SubgraphDef+CompiledNode → StateGraph
 │   ├── manifest_generator.py   # GraphStructure+AbtProjectConfig → manifest.json
 │   ├── selector.py             # dbt-style node selection (+name+, tag:, path:, glob)
 │   ├── fingerprint.py          # SHA256 file hashing for incremental compilation
@@ -87,16 +83,16 @@ abt/
 └── exceptions.py   # Custom exception hierarchy
 ```
 
-## What's built (v0.9.0 — Incremental execution)
+## What's built (v1.0.0)
 
-- [x] Full CLI (init, compile, run, test) — all wired to real pipeline
+- [x] Full CLI (init, compile, run, test, serve)
 - [x] YAML schema → dynamic Pydantic with enum/constraint validation
 - [x] Source/tool registration (REST, MCP, Python function)
 - [x] Jinja env with ref(), source(), config(), var(), env_var()
-- [x] CTE parser (multi-line, single-line, tool-step detection)
+- [x] CTE parser (multi-line, single-line, AS TOOL/AS LLM)
 - [x] Folder routing parser (require_all, require_any, metadata, prompt_root-aware node keys)
-- [x] Graph builder + dependency resolution + Python codegen (routing-aware: `_flatten_blocks()` + `_wire_blocks()`)
-- [x] SQLite persistence (agent_runs, llm_traces, tool_results, node_executions)
+- [x] Graph builder + dependency resolution (manifest.json is the single artifact)
+- [x] SQLite persistence (agent_runs, llm_traces, tool_results, node_executions, node_cache)
 - [x] Node runner with CTE execution, retries, SELECT-ref resolution
 - [x] Real LangGraph StateGraph with Annotated reducers
 - [x] Parallel execution (require_all) + OR-gate (require_any with collector)
@@ -105,18 +101,18 @@ abt/
 - [x] Example project (inventory agent: 5 prompts, 4 schemas, 2 sources)
 - [x] Nested subgraph compilation (3-level nesting tested)
 - [x] MCP client with persistent stdio connections + SQLite caching
-- [x] Token streaming (callback pattern: CLI → Executor → NodeRunner → LLM)
+- [x] Native token streaming via LangGraph `get_stream_writer()` + `app.stream()`
 - [x] Manifest file (manifest.json: 7 sections including file_hashes)
 - [x] dbt-style selectors (`+name+`, `tag:`, `path:`, `source:`, glob, `--exclude`)
-- [x] **Incremental compilation** — manifest.json as cache, SHA256 fingerprints, conservative invalidation, `--full-refresh`
-- [x] **Pydantic output validation** — `node_runner.py` validates LLM output against `output_schema_type`, feeds errors back on retry
-- [x] **Compile-time ref() contracts** — `graph_builder.py` raises `GraphBuildError` on unresolved `ref('X')`
-- [x] **Explicit CTE types** — `AS TOOL` / `AS LLM` syntax, `CTEBlock.cte_type` field, backward-compatible legacy detection
-- [x] **`abt test`** — `.test.yml` data assertions with safe eval, `TestRunner`, 3 example test files (8 assertions)
-- [x] **Dynamic routing** — `route_on`/`route_when`/`route_default` in config, `add_conditional_edges` in executor, compile-time target resolution
-- [x] **Human-in-the-loop** — `interrupt()` approval gates via `approve_when`/`approve_message` in config
-- [x] **Triggers** — declarative agent activation (schedule, webhook, message), `abt serve` with Starlette, `--trigger` flag, trigger_manager
-- [x] **Incremental execution** — `node_cache` table, `_compute_node_inputs_hash()`, `--refresh` flag, skips LLM calls when inputs unchanged
+- [x] Incremental compilation — manifest.json as cache, SHA256 fingerprints, conservative invalidation, `--full-refresh`
+- [x] Pydantic output validation — validates LLM output against `output_schema_type`, feeds errors back on retry
+- [x] Compile-time ref() contracts — `GraphBuildError` on unresolved `ref('X')`
+- [x] Explicit CTE types — `AS TOOL` / `AS LLM` syntax, `CTEBlock.cte_type` field
+- [x] `abt test` — `.test.yml` data assertions with safe eval, `TestRunner`, 8 assertions
+- [x] Dynamic routing — `route_on`/`route_when`/`route_default`, `add_conditional_edges`, compile-time target resolution
+- [x] Human-in-the-loop — `interrupt()` approval gates via `approve_when`/`approve_message` in config
+- [x] Triggers — declarative agent activation (schedule, webhook, message), `abt serve` with Starlette
+- [x] Incremental execution — `node_cache` table, `_compute_node_inputs_hash()`, `--refresh` flag
 
 ## LLM Setup
 
@@ -150,21 +146,19 @@ A dbt analytics engineer exploring AI agent development. Deep understanding of d
 
 ## Current state (2026-06-05)
 
-v0.9.0 — 8 of 10 improvements from IMPROVEMENTS.md done. Both compile and runtime are incremental. All 7 test suites pass.
+v1.0.0 — Manifest.json is the single compilation artifact. Both compile and runtime are incremental. All tests pass.
 
-**Completed (this session):**
-- #5 Incremental execution — `node_cache` SQLite table, `_compute_node_inputs_hash()`, `--refresh` flag, skips LLM calls when inputs unchanged
-
-**Completed (previous):**
-- #7 Triggers — `triggers/` directory, `.triggers.yml`, schedule/webhook/message, `abt serve`, `--trigger` flag
-- #7a Human-in-the-loop — `interrupt()` approval gates via `approve_when`/`approve_message` in config
-- #1 Pydantic output validation — `node_runner.py:92-103`, validates against `output_schema_type`, feeds errors back on retry
-- #2 Compile-time ref() contracts — `graph_builder.py:52-57`, `GraphBuildError` on unresolved `ref('X')`
-- #3 Explicit CTE types — `AS TOOL` / `AS LLM` syntax, `CTEBlock.cte_type`, backward-compatible
-- #4 `abt test` — `.test.yml` data assertions, `TestRunner` with safe eval, 8 assertions in example project
-- #5 Dynamic routing — `route_on`/`route_when`/`route_default`, `add_conditional_edges`, compile-time target resolution
-
-**Next: #8c Native streaming** (1h) or **#6 Remove codegen** (1-2h).
+**Completed (previous sessions):**
+- #1 Pydantic output validation
+- #2 Compile-time ref() contracts
+- #3 Explicit CTE types (AS TOOL / AS LLM)
+- #4 `abt test`
+- #5 Incremental execution
+- #6 Remove codegen — `generate_python_code()` removed, `_subgraph_to_dict()` kept
+- #7 Triggers + #7a Human-in-the-loop + #8b Dynamic routing
+- #8c Native streaming — LangGraph `get_stream_writer()` + `app.stream()`
+- Final cleanup — IMPROVEMENTS.md removed, README.md rewritten for v1.0.0, dead test references fixed
+- IMPROVEMENTS.md removed (all done), README.md rewritten for v1.0.0
 
 ### New features detail
 
@@ -349,24 +343,25 @@ require_all/                    → compiled as LangGraph StateGraph
 
 Each non-sequential folder becomes its own StateGraph, handles internal routing (AND/OR gate), and is added as a single node in the parent. `_block_entry_names`/`_block_exit_names` return `[block["name"]]` — the subgraph looks like one node to its parent.
 
-### Token streaming architecture (v0.3.4)
+### Token streaming architecture (v1.0.0 — native via LangGraph)
 
-Callback pattern: `CLI → GraphExecutor → NodeRunner → _execute_llm_cte`.
+Uses LangGraph's built-in `get_stream_writer()` + `app.stream()` instead of a custom 4-layer callback chain.
 
 ```
-cli.py: _stream_printer(node, cte, delta, event)
-  → GraphExecutor.__init__(stream_callback=...)
-    → NodeRunner.__init__(stream_callback=...)
-      → _execute_llm_cte(stream_callback=...)
+cli.py: stream loop over executor.execute_stream()
+  → GraphExecutor.execute_stream(): app.stream(stream_mode=["updates", "custom"])
+    → NodeRunner._execute_llm_cte(): get_stream_writer() → writer({...})
 ```
 
-Callback signature: `(node_name, cte_name, delta, event) -> None`
-Events: `"cte_start"` (delta=""), `"token"` (delta=chunk), `"cte_end"` (delta=full content)
+Event structure: `{"event": "cte_start"|"token"|"cte_end", "node": ..., "cte": ..., ...}`
 
-When `stream_callback is None` → original non-streaming `create()` path, zero overhead.
-When set → `create(stream=True)`, iterate chunks, accumulate for SQLite, callback per event.
+Stream modes:
+- `"custom"` → LLM token events emitted via `get_stream_writer()`
+- `"updates"` → state changes (node outputs, errors) for final result accumulation
 
-Key files: `node_runner.py:146,195-228`, `executor.py:53,59,111,210`, `cli.py:168-177`.
+When `get_stream_writer()` is unavailable (non-stream context, e.g. `app.invoke()`), falls back to non-streaming LLM call automatically.
+
+Key files: `executor.py:139-183` (execute_stream), `node_runner.py:276-308` (streaming path in _execute_llm_cte), `cli.py:139-158` (stream event loop).
 
 ### Manifest architecture (v0.5.0 — now includes file_hashes)
 
@@ -401,6 +396,5 @@ example_project/
 │   │   └── fallback_b.prompt
 │   └── decide.prompt               # Depends on ref('require_all/check_stock'), ref('require_all/check_demand')
 └── target/
-    ├── compiled_graph.py           # Auto-generated standalone Python
-    └── manifest.json               # Compiled artifact (metadata, nodes, sources, schemas, graph, project)
+    └── manifest.json               # Single compilation artifact (metadata, nodes, sources, schemas, graph, project)
 ```

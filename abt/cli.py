@@ -41,10 +41,7 @@ def init(project_name: str, directory: str):
 @click.option("--select", "-s", multiple=True, help="Select specific prompt files")
 @click.option("--full-refresh", is_flag=True, help="Ignore cache, recompile from scratch")
 def compile(select: tuple, full_refresh: bool):
-    """Compile the abt project into a LangGraph graph.
-
-    Produces target/compiled_graph.py — a standalone runnable Python script.
-    """
+    """Compile the abt project into manifest.json and target artifacts."""
     project_root = _find_project_root()
     click.echo(f"Compiling project at {project_root}...")
 
@@ -52,7 +49,6 @@ def compile(select: tuple, full_refresh: bool):
     config = artifacts["config"]
     loader = artifacts["loader"]
     graph_structure = artifacts["graph_structure"]
-    gb = artifacts["graph_builder"]
     manifest = artifacts["manifest"]
 
     target = loader.get_target_dir()
@@ -62,10 +58,6 @@ def compile(select: tuple, full_refresh: bool):
         json.dumps(manifest, indent=2, default=str), encoding="utf-8"
     )
     click.echo(f"  Manifest: target/manifest.json")
-
-    # Generate code
-    code = gb.generate_python_code(graph_structure, target / "compiled_graph.py")
-    click.echo(f"  Generated: target/compiled_graph.py ({len(code)} bytes)")
     click.echo("Compilation complete.")
 
 
@@ -140,22 +132,30 @@ def run(selectors, exclude, thread_id, input_file, trigger, db_path, stream, ref
     tool_table = ToolTable(sources, db)
     tool_table.build_all()
 
-    if stream:
-        def _stream_printer(node_name: str, cte_name: str, delta: str, event: str) -> None:
-            if event == "cte_start":
-                click.echo(f"\n[{node_name}/{cte_name}] ", nl=False)
-            elif event == "token":
-                click.echo(delta, nl=False)
-            elif event == "cte_end":
-                click.echo()
-    else:
-        _stream_printer = None
-
     executor = GraphExecutor(graph_structure, db, tool_table, llm_factory=None,
-                             stream_callback=_stream_printer, use_cache=not refresh)
+                             use_cache=not refresh)
     click.echo(f"  Nodes: {len(graph_structure.all_nodes)}")
 
-    result = executor.execute(initial_input, thread_id=thread_id)
+    if stream:
+        result = {}
+        for stream_event in executor.execute_stream(initial_input, thread_id=thread_id):
+            etype = stream_event["type"]
+            data = stream_event["data"]
+
+            if etype == "event":
+                evt = data.get("event", "")
+                if evt == "cte_start":
+                    click.echo(f"\n[{data['node']}/{data['cte']}] ", nl=False)
+                elif evt == "token":
+                    click.echo(data["delta"], nl=False)
+                elif evt == "cte_end":
+                    click.echo()
+            elif etype == "interrupt":
+                result["__interrupt__"] = data
+            elif etype == "final":
+                result = data
+    else:
+        result = executor.execute(initial_input, thread_id=thread_id)
 
     # HITL approval loop
     while "__interrupt__" in result:
@@ -534,7 +534,6 @@ def _compile_project(project_root: Path, full_refresh: bool) -> dict:
         "config": config,
         "loader": loader,
         "graph_structure": graph_structure,
-        "graph_builder": gb,
         "manifest": manifest,
     }
 
@@ -543,10 +542,23 @@ def _find_project_root() -> Path:
     current = Path.cwd()
     for parent in [current] + list(current.parents):
         if (parent / "abt_project.yml").exists():
+            _load_dotenv(parent)
             return parent
     raise click.ClickException(
         "abt_project.yml not found. Run 'abt init' first or cd into an abt project."
     )
+
+
+def _load_dotenv(project_root: Path):
+    """Load .env file from project root. Silently skips if file or package missing."""
+    env_file = project_root / ".env"
+    if not env_file.exists():
+        return
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(env_file)
+    except ImportError:
+        pass
 
 
 def _count_subgraphs(sg) -> int:
@@ -627,6 +639,15 @@ def _create_project_skeleton(root: Path, project_name: str):
 
     for d in ["prompts", "schemas", "sources", "macros", "triggers", "target"]:
         (root / d).mkdir(exist_ok=True)
+
+    # .env.example — copy to .env and fill in your keys
+    env_example = (
+        "# LLM API key (required)\n"
+        "DEEPSEEK_API_KEY=sk-...\n"
+        "# Optional: override base URL\n"
+        "# DEEPSEEK_BASE_URL=https://api.deepseek.com\n"
+    )
+    (root / ".env.example").write_text(env_example)
 
     example_schema = (
         "version: 1\n"
