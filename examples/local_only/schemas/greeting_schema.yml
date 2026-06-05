@@ -1,0 +1,16 @@
+version: 1
+models:
+  - name: greeting_output
+    description: "Output from the greeting agent"
+    fields:
+      - name: greeting
+        type: str
+        description: "The greeting message"
+      - name: name
+        type: str
+        description: "The name being greeted"
+      - name: length
+        type: int
+        description: "Length of the greeting in characters"
+        constraints:
+          ge: 1

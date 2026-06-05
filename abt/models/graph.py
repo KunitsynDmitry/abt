@@ -10,6 +10,7 @@ class RoutingType(str, Enum):
     SEQUENTIAL = "sequential"
     REQUIRE_ALL = "require_all"
     REQUIRE_ANY = "require_any"
+    REQUIRE_FIRST = "require_first"
 
 
 class SubgraphDef(BaseModel):

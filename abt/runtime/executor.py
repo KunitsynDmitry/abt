@@ -217,7 +217,11 @@ class GraphExecutor:
         for node_name in ordered:
             node = self.structure.all_nodes[node_name]
             tools = self.tool_table.get_tools_for_node(node.resolved_tools) if self.tool_table else []
-            runner = NodeRunner(node, tools, self.db, llm_factory=self.llm_factory, use_cache=self._use_cache)
+            runner = NodeRunner(
+                node, tools, self.db,
+                llm_factory=self.llm_factory, use_cache=self._use_cache,
+                source_definitions=self.structure.all_sources,
+            )
             node_fn = runner.make_node_function()
 
             update = node_fn(state)
@@ -275,8 +279,13 @@ class GraphExecutor:
 
     def _make_block(self, subgraph_def: SubgraphDef) -> dict[str, Any]:
         """Create a nested block from a non-sequential subgraph."""
+        type_map = {
+            RoutingType.REQUIRE_ALL: "parallel",
+            RoutingType.REQUIRE_ANY: "any",
+            RoutingType.REQUIRE_FIRST: "first",
+        }
         return {
-            "type": "parallel" if subgraph_def.routing == RoutingType.REQUIRE_ALL else "any",
+            "type": type_map[subgraph_def.routing],
             "name": subgraph_def.name,
             "children": self._flatten_tree(subgraph_def),
         }
@@ -291,7 +300,7 @@ class GraphExecutor:
             if block["type"] == "node":
                 self._add_leaf_node_to(sg, block)
                 wired.add(block["name"])
-            elif block["type"] in ("parallel", "any"):
+            elif block["type"] in ("parallel", "any", "first"):
                 child_sg = StateGraph(AbtState)
                 child_wired = self._build_blocks_in_graph(child_sg, block["children"])
                 wired.update(child_wired)
@@ -299,6 +308,8 @@ class GraphExecutor:
 
                 if block["type"] == "parallel":
                     self._wire_fan_out_in(child_sg, block["children"])
+                elif block["type"] == "first":
+                    self._wire_first_success(child_sg, block)
                 else:
                     self._wire_or_gate(child_sg, block)
 
@@ -316,7 +327,11 @@ class GraphExecutor:
             if self.tool_table
             else []
         )
-        runner = NodeRunner(compiled_node, tools, self.db, llm_factory=self.llm_factory, use_cache=self._use_cache)
+        runner = NodeRunner(
+            compiled_node, tools, self.db,
+            llm_factory=self.llm_factory, use_cache=self._use_cache,
+            source_definitions=self.structure.all_sources,
+        )
         node_fn = runner.make_node_function()
         sg.add_node(node_name, node_fn)
 
@@ -351,6 +366,34 @@ class GraphExecutor:
                 sg.add_edge(exit_name, collector_name)
 
         sg.add_edge(collector_name, END)
+
+    def _wire_first_success(self, sg: StateGraph, block: dict) -> None:
+        """Wire sequential fallback: try children in order, first success wins.
+
+        START → child_0 → [success?] → END
+                       → [failure?] → child_1 → [success?] → END
+                                               → [failure?] → ... → END (error)
+        """
+        children = block["children"]
+        leaf_names = self._all_node_names_in_blocks(children)
+
+        # START → first child
+        for entry in self._block_entry_names(children[0]):
+            sg.add_edge(START, entry)
+
+        # Wire each child to either END (success) or next child (failure)
+        for i in range(len(children) - 1):
+            src_names = self._block_exit_names(children[i])
+            tgt_names = self._block_entry_names(children[i + 1])
+
+            for src in src_names:
+                route_fn = _make_first_success_route(src)
+                path_map = {"__success__": END, "__failure__": tgt_names[0]}
+                sg.add_conditional_edges(src, route_fn, path_map)
+
+        # Last child → END either way
+        for exit_name in self._block_exit_names(children[-1]):
+            sg.add_edge(exit_name, END)
 
     def _wire_sequential_blocks(self, sg: StateGraph, blocks: list[dict]) -> None:
         """Wire START -> blocks[0] -> blocks[1] -> ... -> END sequentially.
@@ -479,3 +522,14 @@ class GraphExecutor:
                 f"— model={t['model']}, latency={t['latency_ms']}ms, "
                 f"tokens: {t['tokens_input']}/{t['tokens_output']}"
             )
+
+
+def _make_first_success_route(node_name: str):
+    """Return a route function: __success__ if node succeeded, __failure__ otherwise."""
+    def route_fn(state: dict) -> str:
+        output = state.get(NODE_OUTPUTS_KEY, {}).get(node_name, {})
+        if output and "error" in output:
+            return "__failure__"
+        return "__success__"
+    route_fn.__name__ = f"first_success_route_{node_name}"
+    return route_fn

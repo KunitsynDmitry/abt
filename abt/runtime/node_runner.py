@@ -10,7 +10,49 @@ from typing import Any, Callable
 from openai import OpenAI
 
 from ..models.node import CompiledNode
+from ..models.prompt import ContextProjection, WhereCondition
 from .db import DatabaseManager
+
+
+# Provider → (env var for API key, default base URL)
+_PROVIDER_MAP: dict[str, tuple[str, str]] = {
+    "deepseek": ("DEEPSEEK_API_KEY", "https://api.deepseek.com"),
+    "openai": ("OPENAI_API_KEY", "https://api.openai.com/v1"),
+    "anthropic": ("ANTHROPIC_API_KEY", "https://api.anthropic.com"),
+}
+
+
+def _resolve_provider(provider: str) -> tuple[str, str]:
+    """Return (api_key, base_url) for the given provider name.
+
+    Falls back to DEEPSEEK_* env vars when provider is empty or unknown,
+    then tries OPENAI_*, then raises if nothing is configured.
+    """
+    if provider and provider in _PROVIDER_MAP:
+        env_key, default_url = _PROVIDER_MAP[provider]
+        api_key = os.environ.get(env_key, "")
+        base_url = os.environ.get(f"{provider.upper()}_BASE_URL", default_url)
+        if api_key:
+            return api_key, base_url
+        raise RuntimeError(
+            f"Provider '{provider}' requires {env_key} environment variable.\n"
+            f"  Set {env_key}=sk-... or configure a different provider in abt_project.yml"
+        )
+
+    # Auto-detect: try common providers in order
+    for name, (env_key, default_url) in _PROVIDER_MAP.items():
+        api_key = os.environ.get(env_key, "")
+        if api_key:
+            base_url = os.environ.get(f"{name.upper()}_BASE_URL", default_url)
+            return api_key, base_url
+
+    raise RuntimeError(
+        "No LLM API key configured. Set one of:\n"
+        "  DEEPSEEK_API_KEY=sk-...\n"
+        "  OPENAI_API_KEY=sk-...\n"
+        "  ANTHROPIC_API_KEY=sk-...\n"
+        "Or pass llm_factory to NodeRunner."
+    )
 
 
 class NodeRunner:
@@ -21,6 +63,7 @@ class NodeRunner:
         db: DatabaseManager,
         llm_factory: Callable[[], OpenAI] | None = None,
         use_cache: bool = True,
+        source_definitions: dict[str, Any] | None = None,
     ):
         self.node = compiled_node
         self.tools = {t.__name__: t for t in tools}
@@ -28,6 +71,7 @@ class NodeRunner:
         self._llm_factory = llm_factory
         self._llm_client: OpenAI | None = None
         self._use_cache = use_cache
+        self._source_defs = source_definitions or {}
         self._tool_call_pattern = re.compile(r"__SOURCE__(\w+)\.(\w+)__")
 
     def _get_llm(self) -> OpenAI:
@@ -36,13 +80,9 @@ class NodeRunner:
         if self._llm_factory:
             self._llm_client = self._llm_factory()
             return self._llm_client
-        api_key = os.environ.get("DEEPSEEK_API_KEY")
-        if not api_key:
-            raise RuntimeError(
-                "No LLM API key configured. Set DEEPSEEK_API_KEY environment variable "
-                "or pass llm_factory to NodeRunner."
-            )
-        base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+
+        provider = self.node.llm_config.get("provider", "")
+        api_key, base_url = _resolve_provider(provider)
         self._llm_client = OpenAI(api_key=api_key, base_url=base_url)
         return self._llm_client
 
@@ -52,6 +92,7 @@ class NodeRunner:
         db = self.db
         get_llm = self._get_llm
         use_cache = self._use_cache
+        source_defs = self._source_defs
 
         def node_fn(state: dict) -> dict:
             run_id = state.get("_run_id", "unknown")
@@ -76,7 +117,7 @@ class NodeRunner:
                     for cte in node.prompt.cte_blocks:
                         if cte.cte_type == "tool":
                             cte_results[cte.name] = _execute_tool_cte(
-                                cte, cte_results, tools, db, run_id
+                                cte, cte_results, tools, db, run_id, source_defs
                             )
                         else:
                             cte_results[cte.name] = _execute_llm_cte(
@@ -93,7 +134,10 @@ class NodeRunner:
                         if node.prompt.output_columns:
                             output = {}
                             for col in node.prompt.output_columns:
-                                output[col] = final.get(col) or final.get(col.lower()) or f"[{col}]"
+                                val = final.get(col)
+                                if val is None:
+                                    val = final.get(col.lower())
+                                output[col] = val if val is not None else f"[{col}]"
                         else:
                             output = final
                     else:
@@ -196,9 +240,8 @@ def _compute_node_inputs_hash(node: CompiledNode, state: dict) -> str:
     return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
-def _execute_tool_cte(cte, cte_results, tools, db, run_id):
+def _execute_tool_cte(cte, cte_results, tools, db, run_id, source_defs=None):
     rendered = cte.rendered_content
-    # Find tool references
     tool_pattern = re.compile(r"__SOURCE__(\w+)\.(\w+)__")
     matches = tool_pattern.findall(rendered)
 
@@ -211,18 +254,89 @@ def _execute_tool_cte(cte, cte_results, tools, db, run_id):
     if tool_key not in tools:
         return {"error": f"Tool '{source_name}.{table_name}' not bound to this node"}
 
-    # Extract parameters from the rendered content
-    # e.g. WHERE product_id = 'SKU-123' → {"product_id": "SKU-123"}
-    params = {}
-    where_match = re.search(r"WHERE\s+(\w+)\s*=\s*'([^']*)'", rendered, re.IGNORECASE)
-    if where_match:
-        params[where_match.group(1)] = where_match.group(2)
+    # Extract ALL parameters from WHERE clause
+    params = _parse_tool_params(rendered)
+
+    # Validate against source table definition
+    if source_defs and source_name in source_defs:
+        src = source_defs[source_name]
+        for tbl in src.tables:
+            if tbl.name == table_name:
+                _validate_tool_params(params, tbl, source_name, table_name)
+                break
 
     try:
         result = tools[tool_key](**params)
         return {"data": result}
     except Exception as e:
         return {"error": str(e)}
+
+
+def _parse_tool_params(rendered: str) -> dict[str, Any]:
+    """Extract all WHERE key=value pairs from rendered tool CTE content.
+
+    Supports: strings ('value', "value"), integers, floats, booleans, None.
+    """
+    params: dict[str, Any] = {}
+
+    # Split on WHERE keyword, take everything after it
+    where_idx = rendered.upper().find("WHERE")
+    if where_idx == -1:
+        return params
+
+    where_clause = rendered[where_idx + 5:].strip()
+
+    # Parse key=value pairs with support for quoted strings, numbers, booleans
+    # Pattern: key = 'string' | "string" | number | true | false | None
+    kv_pattern = re.compile(
+        r"""(\w+)\s*=\s*(?:
+            '([^']*)'|
+            "([^"]*)"|
+            (\d+\.?\d*)|
+            (true|false)|
+            (None)
+        )""",
+        re.IGNORECASE | re.VERBOSE,
+    )
+
+    for m in kv_pattern.finditer(where_clause):
+        key = m.group(1)
+        str_single = m.group(2)
+        str_double = m.group(3)
+        num_val = m.group(4)
+        bool_val = m.group(5)
+        none_val = m.group(6)
+
+        if str_single is not None:
+            params[key] = str_single
+        elif str_double is not None:
+            params[key] = str_double
+        elif bool_val is not None:
+            params[key] = bool_val.lower() == "true"
+        elif none_val is not None:
+            params[key] = None
+        elif num_val is not None:
+            params[key] = float(num_val) if "." in num_val else int(num_val)
+
+    return params
+
+
+def _validate_tool_params(
+    params: dict, table, source_name: str, table_name: str
+) -> None:
+    """Validate extracted params against table definition. Raises on missing required."""
+    expected = table.params or table.input_schema
+    if not expected:
+        return
+
+    for pname, pdef in expected.items():
+        if isinstance(pdef, dict) and pdef.get("required") and pname not in params:
+            raise ValueError(
+                f"Tool '{source_name}.{table_name}': "
+                f"missing required parameter '{pname}'. "
+                f"Available params: {list(params.keys())}. "
+                f"Expected: {list(expected.keys())}"
+            )
 
 
 def _execute_llm_cte(cte, cte_results, state, node, llm_client, db, run_id,
@@ -234,13 +348,24 @@ def _execute_llm_cte(cte, cte_results, state, node, llm_client, db, run_id,
 
     for ref_name in cte.model_refs:
         node_outputs = state.get("node_outputs", {})
+        raw_value = None
         if ref_name in node_outputs:
-            context_parts[ref_name] = node_outputs[ref_name]
+            raw_value = node_outputs[ref_name]
         else:
             for key, val in node_outputs.items():
                 if key.endswith("/" + ref_name) or key == ref_name:
-                    context_parts[ref_name] = val
+                    raw_value = val
                     break
+
+        if raw_value is None:
+            continue
+
+        # Apply context projection (SELECT columns + WHERE filter)
+        projection = cte.context_projection
+        if projection and projection.ref_name == ref_name:
+            raw_value = _apply_context_projection(raw_value, projection)
+
+        context_parts[ref_name] = raw_value
 
     # Build system prompt
     config = node.prompt.config
@@ -346,3 +471,70 @@ def _execute_llm_cte(cte, cte_results, state, node, llm_client, db, run_id,
             except json.JSONDecodeError:
                 pass
         return {"raw_response": content}
+
+
+def _apply_context_projection(raw_value, projection) -> dict | list:
+    """Apply SELECT column projection and WHERE filtering to ref'd node output.
+
+    raw_value can be a dict (single row) or list of dicts (multiple rows).
+    Returns filtered dict or list.
+    """
+    from ..models.prompt import ContextProjection
+
+    rows = raw_value if isinstance(raw_value, list) else [raw_value]
+    columns = projection.columns
+    conditions = projection.conditions
+    logic = projection.logic
+
+    filtered: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            filtered.append(row)
+            continue
+
+        if conditions:
+            results = [_eval_condition(row, c) for c in conditions]
+            if logic.upper() == "OR":
+                if not any(results):
+                    continue
+            else:
+                if not all(results):
+                    continue
+
+        if columns:
+            projected = {c: row.get(c) for c in columns}
+        else:
+            projected = dict(row)
+
+        filtered.append(projected)
+
+    if isinstance(raw_value, list):
+        return filtered
+    return filtered[0] if filtered else {}
+
+
+def _eval_condition(row: dict, condition) -> bool:
+    """Evaluate a single WhereCondition against a row dict."""
+    from ..models.prompt import WhereCondition
+
+    field = condition.field
+    op = condition.op
+    value = condition.value
+    row_value = row.get(field)
+
+    try:
+        if op == "=":
+            return row_value == value
+        elif op == "!=":
+            return row_value != value
+        elif op == ">":
+            return (row_value is not None) and (row_value > value)
+        elif op == "<":
+            return (row_value is not None) and (row_value < value)
+        elif op == ">=":
+            return (row_value is not None) and (row_value >= value)
+        elif op == "<=":
+            return (row_value is not None) and (row_value <= value)
+        return True
+    except TypeError:
+        return False

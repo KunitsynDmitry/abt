@@ -1,0 +1,18 @@
+name: local_only
+version: "0.1.0"
+
+paths:
+  prompt_paths: [prompts]
+  schema_paths: [schemas]
+  source_paths: [sources]
+  target_path: target
+
+models:
+  default:
+    provider: deepseek
+    model: deepseek-chat
+    temperature: 0.0
+    max_tokens: 256
+
+vars:
+  greeting: "Hello from ABT"

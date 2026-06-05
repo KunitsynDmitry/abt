@@ -1,0 +1,20 @@
+{{ config(temperature=0.0, output_schema="greeting_output") }}
+
+You are a friendly greeting agent.
+Greet the user using the context provided.
+
+WITH fetch_info AS TOOL (
+    -- Fetch local info (no API key needed!)
+    SELECT * FROM {{ source('local_utils', 'get_info') }}
+),
+
+generate_greeting AS LLM (
+    Create a warm greeting using the user_name from the context.
+    Include the version and status in your thinking.
+)
+
+SELECT
+    greeting,  -- str: the greeting message
+    name,      -- str: the user's name
+    length     -- int: length of the greeting
+FROM generate_greeting

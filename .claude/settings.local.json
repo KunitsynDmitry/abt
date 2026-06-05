@@ -49,7 +49,15 @@
       "PowerShell(python C:/Users/Windows/Downloads/abt_v1/tests/test_generated_python.py 2>&1)",
       "Bash(dir C:UsersWindowsDownloadsabt_v1example_project *)",
       "Bash(Remove-Item *)",
-      "Bash(Test-Path *)"
+      "Bash(Test-Path *)",
+      "PowerShell(python -c \"from abt.models.prompt import ContextProjection, WhereCondition, CTEBlock; print\\('OK'\\)\")",
+      "PowerShell(python -c \"from abt.compiler.cte_parser import CTEParser; result = CTEParser.parse_context_projection\\('SELECT article_id, competitor_price\\\\nFROM __REF__market_research__\\\\nWHERE confidence_score > 0.8'\\); print\\('columns:', result.columns\\); print\\('ref:', result.ref_name\\); print\\('conditions:', [\\(c.field, c.op, c.value\\) for c in result.conditions]\\)\")",
+      "PowerShell(python -m pytest tests/ -q 2>&1)",
+      "PowerShell(python -m pytest tests/test_golden_dsl.py -v 2>&1)",
+      "PowerShell(python -m pytest tests/test_local_only_example.py -v 2>&1)",
+      "PowerShell(python -m pytest tests/test_integration.py -v 2>&1)",
+      "PowerShell(python -c \"from abt.runtime.executor import GraphExecutor; print\\('OK'\\)\" 2>&1)",
+      "PowerShell(python -m pytest tests/test_blueprints.py -v 2>&1)"
     ]
   }
 }

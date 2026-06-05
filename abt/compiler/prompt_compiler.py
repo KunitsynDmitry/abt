@@ -48,6 +48,11 @@ class PromptCompiler:
 
             cte.tool_refs = tools
             cte.model_refs = refs
+
+            # Parse context projection (SELECT/FROM/WHERE) for LLM CTEs
+            if not cte.is_tool_step and cte.model_refs:
+                cte.context_projection = CTEParser.parse_context_projection(rendered)
+
             all_refs.update(refs)
             all_sources.update(tools)
 
@@ -60,6 +65,7 @@ class PromptCompiler:
         # Merge config: project defaults < file-level {{ config(...) }}
         merged_cfg: dict = {}
         if self.defaults:
+            merged_cfg["provider"] = self.defaults.provider
             merged_cfg["model"] = self.defaults.model
             merged_cfg["temperature"] = self.defaults.temperature
             merged_cfg["max_tokens"] = self.defaults.max_tokens

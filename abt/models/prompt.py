@@ -1,12 +1,28 @@
 """Prompt models — CTEBlock, PromptConfig, ParsedPrompt."""
 
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
+class WhereCondition(BaseModel):
+    """A single WHERE condition: field op value."""
+    field: str
+    op: str = "="  # =, !=, >, <, >=, <=
+    value: Any = None
+
+
+class ContextProjection(BaseModel):
+    """Parsed SELECT/FROM/WHERE from a CTE — defines what context the node actually receives."""
+    columns: list[str] = Field(default_factory=list)
+    ref_name: str = ""
+    conditions: list[WhereCondition] = Field(default_factory=list)
+    logic: str = "AND"  # AND | OR
+
+
 class PromptConfig(BaseModel):
+    provider: str = ""  # deepseek, openai, anthropic, or custom — empty = auto-detect from env
     model: str = "deepseek-chat"
     temperature: float = 0.7
     max_tokens: int = 4096
@@ -33,6 +49,7 @@ class CTEBlock(BaseModel):
     is_tool_step: bool = False
     tool_refs: list[tuple[str, str]] = Field(default_factory=list)
     model_refs: list[str] = Field(default_factory=list)
+    context_projection: ContextProjection | None = None  # parsed SELECT/FROM/WHERE
     config: PromptConfig | None = None  # CTE-level config override
 
 

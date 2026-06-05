@@ -13,6 +13,7 @@ class ProjectPaths(BaseModel):
     source_paths: list[str] = Field(default_factory=lambda: ["sources"])
     macro_paths: list[str] = Field(default_factory=lambda: ["macros"])
     triggers_paths: list[str] = Field(default_factory=lambda: ["triggers"])
+    blueprint_paths: list[str] = Field(default_factory=lambda: ["blueprints"])
     target_path: str = "target"
 
 
@@ -44,7 +45,8 @@ class AbtProjectConfig(BaseModel):
         for schema_path in self.paths.schema_paths:
             if not (root / schema_path).exists():
                 errors.append(f"Schema path not found: {schema_path}")
+        # Triggers are optional — only validate if the path exists or is explicitly configured
         for triggers_path in self.paths.triggers_paths:
             if not (root / triggers_path).exists():
-                errors.append(f"Triggers path not found: {triggers_path}")
+                pass  # triggers are optional
         return errors

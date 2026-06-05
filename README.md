@@ -57,11 +57,14 @@ my_agent/
 │   └── apis.yml                 # Tool/API registrations (REST, MCP, Python)
 ├── triggers/
 │   └── my_agent.triggers.yml    # Trigger definitions (schedule, webhook, message)
+├── blueprints/                  # Reusable subgraphs (referenced via _folder_name)
+│   └── approval/
+│       └── request_approval.prompt
 ├── prompts/
 │   ├── require_all/             # AND gate — all children must complete
 │   │   ├── check_x.prompt
 │   │   └── check_y.prompt
-│   ├── require_any__fast/       # OR gate — first success wins (metadata: tag=fast)
+│   ├── require_any__fast/       # OR gate — runs all branches, first non-error wins (metadata: tag=fast)
 │   │   ├── fallback_a.prompt
 │   │   └── fallback_b.prompt
 │   └── decide.prompt            # Depends on results from require_all/*
@@ -147,7 +150,7 @@ sources:
           product_id: {type: str, required: true}
 ```
 
-Supports `rest_api`, `mcp_server`, `python_function`, `graphql`.
+Supports `rest_api`, `mcp_server`, `python_function`.
 
 ## Triggers (dbt exposures pattern)
 
@@ -185,7 +188,7 @@ tests:
   - name: stock_not_negative
     assert: quantity_on_hand >= 0
   - name: location_not_empty
-    assert: location is not null
+    assert: location is not None
 ```
 
 ```bash

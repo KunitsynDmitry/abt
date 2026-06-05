@@ -1,0 +1,10 @@
+version: 1
+sources:
+  - name: local_utils
+    type: python_function
+    description: "Local utility functions — no API keys required"
+    tables:
+      - name: get_info
+        description: "Returns a fixed info object"
+        module: examples.local_only.tools
+        function: get_info

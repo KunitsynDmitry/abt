@@ -1,0 +1,13 @@
+tests:
+  - name: greeting_not_empty
+    assert: greeting != ""
+    description: "Greeting must not be empty"
+  - name: name_is_present
+    assert: name is not None
+    description: "Name must be present"
+  - name: length_matches
+    assert: length == len(greeting)
+    description: "Length must match actual greeting length"
+  - name: length_positive
+    assert: length >= 1
+    description: "Length must be at least 1"

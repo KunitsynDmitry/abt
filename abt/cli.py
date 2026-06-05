@@ -4,6 +4,7 @@ import copy
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 
@@ -45,7 +46,8 @@ def compile(select: tuple, full_refresh: bool):
     project_root = _find_project_root()
     click.echo(f"Compiling project at {project_root}...")
 
-    artifacts = _compile_project(project_root, full_refresh)
+    selectors = list(select) if select else None
+    artifacts = _compile_project(project_root, full_refresh, select=selectors)
     config = artifacts["config"]
     loader = artifacts["loader"]
     graph_structure = artifacts["graph_structure"]
@@ -63,7 +65,164 @@ def compile(select: tuple, full_refresh: bool):
 
 @cli.command()
 @click.option("--select", "-s", "selectors", multiple=True,
-              help="Select nodes (dbt-style: +name+, tag:xxx, path:xxx, glob)")
+              help="Nodes to inspect (qualified name or leaf name)")
+@click.option("--json", "as_json", is_flag=True, help="Output as JSON")
+def inspect(selectors, as_json):
+    """Show compiled details for nodes: refs, context projection, tools, routing.
+
+    Without --select, lists all compiled nodes with a short summary.
+    With --select, shows full details for the specified node(s).
+
+    \\b
+    Examples:
+        abt inspect
+        abt inspect -s check_stock
+        abt inspect -s require_all/check_stock
+    """
+    project_root = _find_project_root()
+    artifacts = _compile_project(project_root, full_refresh=False)
+    graph_structure = artifacts["graph_structure"]
+    manifest = artifacts["manifest"]
+
+    all_nodes = graph_structure.all_nodes
+
+    if selectors:
+        # Resolve selectors to qualified names
+        resolved: list[str] = []
+        for sel in selectors:
+            if sel in all_nodes:
+                resolved.append(sel)
+            else:
+                matches = [
+                    qn for qn, node in all_nodes.items()
+                    if node.name == sel or qn.endswith("/" + sel)
+                ]
+                if not matches:
+                    click.echo(f"  Warning: '{sel}' not found, skipping")
+                resolved.extend(matches)
+        target_names = resolved
+    else:
+        target_names = sorted(all_nodes.keys())
+
+    if as_json:
+        result = {}
+        for qname in target_names:
+            result[qname] = _inspect_node(all_nodes[qname], manifest)
+        click.echo(json.dumps(result, indent=2, default=str))
+    else:
+        click.echo(f"\n{'=' * 60}")
+        for qname in target_names:
+            _print_node_inspect(qname, all_nodes[qname], manifest)
+        click.echo(f"{'=' * 60}\n")
+
+
+def _inspect_node(node, manifest: dict) -> dict:
+    """Build a dict with compiled node details."""
+    p = node.prompt
+    info: dict[str, Any] = {
+        "name": node.name,
+        "qualified_name": node.qualified_name,
+        "file_path": str(p.file_path),
+        "config": {
+            "model": p.config.model,
+            "temperature": p.config.temperature,
+            "max_tokens": p.config.max_tokens,
+            "max_retries": node.max_retries,
+        },
+        "dependencies": sorted(p.raw_dependencies),
+        "tool_refs": [f"{s}.{t}" for s, t in p.raw_source_refs],
+        "resolved_tools": node.resolved_tools,
+        "output_schema": p.config.output_schema or None,
+        "output_columns": p.output_columns,
+        "on_fail_target": node.on_fail_target,
+        "cte_blocks": [],
+    }
+    if node.route_on:
+        info["routing"] = {
+            "route_on": node.route_on,
+            "route_map": node.route_map,
+            "route_default": node.route_default,
+        }
+    if node.approve_when:
+        info["approval"] = {
+            "approve_when": node.approve_when,
+            "approve_message": node.approve_message,
+        }
+
+    for cte in p.cte_blocks:
+        cte_info: dict[str, Any] = {
+            "name": cte.name,
+            "type": cte.cte_type,
+            "tool_refs": [f"{s}.{t}" for s, t in cte.tool_refs],
+            "model_refs": cte.model_refs,
+        }
+        if cte.context_projection:
+            proj = cte.context_projection
+            cte_info["context_projection"] = {
+                "columns": proj.columns,
+                "ref_name": proj.ref_name,
+                "conditions": [
+                    {"field": c.field, "op": c.op, "value": c.value}
+                    for c in proj.conditions
+                ],
+                "logic": proj.logic,
+            }
+        info["cte_blocks"].append(cte_info)
+
+    return info
+
+
+def _print_node_inspect(qname: str, node, manifest: dict) -> None:
+    """Pretty-print compiled node details."""
+    p = node.prompt
+    click.echo(f"\n  Node: {qname}")
+    click.echo(f"  File: {p.file_path}")
+    click.echo(f"  Config: model={p.config.model}, temp={p.config.temperature}, "
+               f"max_tokens={p.config.max_tokens}, retries={node.max_retries}")
+
+    if p.output_columns:
+        click.echo(f"  Output columns: {', '.join(p.output_columns)}")
+    if p.config.output_schema:
+        click.echo(f"  Output schema: {p.config.output_schema}")
+
+    click.echo(f"  Dependencies ({len(p.raw_dependencies)}): "
+               f"{', '.join(sorted(p.raw_dependencies)) if p.raw_dependencies else '(none)'}")
+    click.echo(f"  Tools ({len(node.resolved_tools)}): "
+               f"{', '.join(node.resolved_tools) if node.resolved_tools else '(none)'}")
+
+    if node.route_on:
+        click.echo(f"  Dynamic routing: route_on='{node.route_on}', "
+                   f"routes={node.route_map}, default={node.route_default}")
+    if node.approve_when:
+        click.echo(f"  Approval gate: when='{node.approve_when}', "
+                   f"message='{node.approve_message}'")
+    if node.on_fail_target:
+        click.echo(f"  On fail: → {node.on_fail_target}")
+
+    if p.cte_blocks:
+        click.echo(f"  CTE blocks ({len(p.cte_blocks)}):")
+        for cte in p.cte_blocks:
+            flags = []
+            if cte.cte_type:
+                flags.append(cte.cte_type.upper())
+            if cte.model_refs:
+                flags.append(f"refs={cte.model_refs}")
+            if cte.tool_refs:
+                flags.append(f"tools={[(s, t) for s, t in cte.tool_refs]}")
+            click.echo(f"    [{cte.name}] {' | '.join(flags) if flags else '(no refs)'}")
+
+            proj = cte.context_projection
+            if proj:
+                parts = []
+                if proj.columns:
+                    parts.append(f"SELECT {', '.join(proj.columns)}")
+                parts.append(f"FROM {proj.ref_name}")
+                if proj.conditions:
+                    conds = f" {proj.logic} ".join(
+                        f"{c.field} {c.op} {c.value!r}" for c in proj.conditions
+                    )
+                    parts.append(f"WHERE {conds}")
+                click.echo(f"      → context: {' '.join(parts)}")
 @click.option("--exclude", multiple=True, help="Exclude nodes from selection")
 @click.option("--thread-id", help="Execution thread ID (for resuming)")
 @click.option("--input", "-i", "input_file", type=click.Path(exists=True),
@@ -420,12 +579,17 @@ def _start_scheduler(schedule_triggers, trigger_manager):
     scheduler.start()
 
 
-def _compile_project(project_root: Path, full_refresh: bool) -> dict:
+def _compile_project(project_root: Path, full_refresh: bool,
+                     select: tuple[str, ...] | None = None) -> dict:
     """Compile the project, returning a dict with all build artifacts.
 
     Uses incremental compilation when possible: only recompiles .prompt files
     whose content has changed since the last run. Schema, source, macro, or
     project config changes trigger a full rebuild.
+
+    When ``select`` is provided, only those prompt files are force-recompiled;
+    all other prompts come from cache (unless global invalidation forces a
+    full rebuild).
     """
     from .project import ProjectLoader
     from .compiler.schema_parser import SchemaParser
@@ -491,6 +655,23 @@ def _compile_project(project_root: Path, full_refresh: bool) -> dict:
             changed = changes["changed_qualified"]
             unchanged = changes["unchanged_qualified"]
 
+            # --select: force recompile selected files even if unchanged
+            if select:
+                select_set = set(select)
+                forced = set()
+                for qname in list(unchanged):
+                    # Match by qualified name (exact or suffix)
+                    if qname in select_set or any(
+                        qname.endswith("/" + s) or qname == s for s in select_set
+                    ):
+                        forced.add(qname)
+                        unchanged.remove(qname)
+                if forced:
+                    changed = changed | forced
+                    click.echo(
+                        f"  --select: force recompiling {len(forced)} specified prompts"
+                    )
+
             if not changed:
                 click.echo(f"  All {len(unchanged)} prompts unchanged — using cache")
                 parsed = cache.load_cached_prompts(
@@ -516,7 +697,23 @@ def _compile_project(project_root: Path, full_refresh: bool) -> dict:
 
     click.echo(f"  Prompts: {len(parsed)} files")
 
-    folder_tree = FolderParser.build_tree(prompt_root, parsed)
+    # Compile blueprint prompts (reusable subgraphs referenced via _folder_name)
+    blueprints_root = project_root / config.paths.blueprint_paths[0]
+    if blueprints_root.exists():
+        bp_files = list(blueprints_root.rglob("*.prompt"))
+        if bp_files:
+            bp_parsed = {}
+            for bp_file in bp_files:
+                bp_compiled = prompt_compiler.compile_file(bp_file, blueprints_root)
+                bp_key = str(bp_file.relative_to(project_root).with_suffix("")).replace("\\", "/")
+                bp_parsed[bp_key] = bp_compiled
+            parsed = {**parsed, **bp_parsed}
+            click.echo(f"  Blueprints: {len(bp_parsed)} prompts")
+
+    folder_tree = FolderParser.build_tree(
+        prompt_root, parsed,
+        blueprints_root=blueprints_root if blueprints_root.exists() else None,
+    )
     subgraph_count = _count_subgraphs(folder_tree)
     click.echo(f"  Folders: {subgraph_count} subgraphs")
 
@@ -637,7 +834,7 @@ def _create_project_skeleton(root: Path, project_name: str):
     )
     (root / "abt_project.yml").write_text(config)
 
-    for d in ["prompts", "schemas", "sources", "macros", "triggers", "target"]:
+    for d in ["prompts", "schemas", "sources", "macros", "triggers", "blueprints", "target"]:
         (root / d).mkdir(exist_ok=True)
 
     # .env.example — copy to .env and fill in your keys

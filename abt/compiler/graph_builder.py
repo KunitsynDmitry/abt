@@ -41,14 +41,23 @@ class GraphBuilder:
 
         # Build dependency graph from ref() calls
         dep_graph: dict[str, set[str]] = {}
+        all_qualified = sorted(all_nodes.keys())
         for qualified_name, node in all_nodes.items():
             deps = set()
             for dep_name in node.prompt.raw_dependencies:
                 resolved = self._resolve_prompt_ref(dep_name, all_nodes)
                 if resolved is None:
+                    similar = _find_similar(dep_name, all_qualified)
+                    hint = ""
+                    if similar:
+                        hint = f"\n  Did you mean? {', '.join(similar)}"
                     raise GraphBuildError(
-                        f"Node '{qualified_name}' references '{dep_name}' "
-                        f"which does not exist"
+                        f"Unresolved ref('{dep_name}') in '{qualified_name}'\n"
+                        f"  File: {node.prompt.file_path}\n"
+                        f"  Available refs ({len(all_qualified)}): "
+                        + ", ".join(all_qualified[:8])
+                        + ("..." if len(all_qualified) > 8 else "")
+                        + hint
                     )
                 deps.add(resolved)
             dep_graph[qualified_name] = deps
@@ -63,9 +72,19 @@ class GraphBuilder:
                     else:
                         resolved = self._resolve_prompt_ref(target, all_nodes)
                         if resolved is None:
+                            all_qualified = sorted(all_nodes.keys())
+                            similar = _find_similar(target, all_qualified)
+                            hint = ""
+                            if similar:
+                                hint = f"\n  Did you mean? {', '.join(similar)}"
                             raise GraphBuildError(
-                                f"Node '{qualified_name}' has route target "
-                                f"'{target}' which does not exist"
+                                f"Route target '{target}' in node '{qualified_name}' "
+                                f"does not exist\n"
+                                f"  File: {node.prompt.file_path}\n"
+                                f"  Available nodes ({len(all_qualified)}): "
+                                + ", ".join(all_qualified[:8])
+                                + ("..." if len(all_qualified) > 8 else "")
+                                + hint
                             )
                         resolved_map[value] = resolved
                 node.route_map = resolved_map
@@ -85,6 +104,7 @@ class GraphBuilder:
             output_schema = self.schemas[prompt.config.output_schema]
 
         llm_config = {
+            "provider": prompt.config.provider,
             "model": prompt.config.model,
             "temperature": prompt.config.temperature,
             "max_tokens": prompt.config.max_tokens,
@@ -122,14 +142,28 @@ class GraphBuilder:
     def _resolve_prompt_ref(
         self, dep_name: str, all_nodes: dict[str, CompiledNode]
     ) -> str | None:
-        """Resolve a ref('name') to a qualified node path."""
+        """Resolve a ref('name') to a qualified node path.
+
+        Tries exact match first, then leaf name match. Fails with a
+        diagnostic error when the leaf name is ambiguous.
+        """
         # Exact match against qualified name
         if dep_name in all_nodes:
             return dep_name
-        # Match against leaf name
-        for qualified, node in all_nodes.items():
-            if node.name == dep_name:
-                return qualified
+        # Match against leaf name — collect all candidates
+        matches = [
+            qualified
+            for qualified, node in all_nodes.items()
+            if node.name == dep_name
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise GraphBuildError(
+                f"Ambiguous ref('{dep_name}'): matches {len(matches)} nodes.\n"
+                + "\n".join(f"  • {m}" for m in sorted(matches))
+                + f"\nUse a qualified name (e.g. ref('{matches[0]}'))."
+            )
         return None
 
 def _subgraph_to_dict(sg: SubgraphDef) -> dict:
@@ -141,3 +175,10 @@ def _subgraph_to_dict(sg: SubgraphDef) -> dict:
         "nodes": sg.nodes,
         "subgraphs": [_subgraph_to_dict(s) for s in sg.subgraphs],
     }
+
+
+def _find_similar(target: str, candidates: list[str], limit: int = 3) -> list[str]:
+    """Find candidate strings that contain the target as a substring."""
+    lower = target.lower()
+    matches = [c for c in candidates if lower in c.lower()]
+    return matches[:limit]

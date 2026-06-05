@@ -1,8 +1,9 @@
 """CTEParser — extracts config blocks, CTE blocks, and SELECT from .prompt files."""
 
 import re
+from typing import Any
 
-from ..models.prompt import CTEBlock, PromptConfig
+from ..models.prompt import CTEBlock, ContextProjection, PromptConfig, WhereCondition
 
 
 class CTEParser:
@@ -210,3 +211,130 @@ class CTEParser:
             model_refs.append(m.group(1))
 
         return is_tool, tool_refs, model_refs
+
+    @classmethod
+    def parse_context_projection(cls, content: str) -> ContextProjection | None:
+        """Parse SELECT/FROM/WHERE from a CTE that references another node.
+
+        Handles both rendered form (__REF__name__) and raw form ({{ ref('name') }}).
+        Returns None if no structured projection is detected.
+        """
+        # Try rendered form first: SELECT ... FROM __REF__name__ WHERE ...
+        ref_match = re.search(r"__REF__([\w/]+)__", content)
+        if not ref_match:
+            # Try raw Jinja form: FROM {{ ref('name') }}
+            ref_match = re.search(r"\{\{\s*ref\(['\"]([^'\"]+)['\"]\)\s*\}\}", content)
+
+        if not ref_match:
+            return None
+
+        ref_name = ref_match.group(1)
+
+        # Extract SELECT columns (between SELECT and FROM)
+        select_match = re.search(
+            r"SELECT\s+(.*?)\s+FROM\s+", content, re.IGNORECASE | re.DOTALL
+        )
+        columns: list[str] = []
+        if select_match:
+            cols_text = select_match.group(1)
+            columns = [
+                c.strip().rstrip(",")
+                for c in re.split(r",\s*", cols_text)
+                if c.strip() and c.strip().lower() != "select"
+            ]
+
+        # Extract WHERE conditions
+        where_match = re.search(
+            r"WHERE\s+(.+?)$", content, re.IGNORECASE | re.DOTALL
+        )
+        conditions: list[WhereCondition] = []
+        logic = "AND"
+        if where_match:
+            where_text = where_match.group(1).strip()
+            conditions, logic = cls._parse_where_clause(where_text)
+
+        if not columns and not conditions:
+            return None
+
+        return ContextProjection(
+            columns=columns,
+            ref_name=ref_name,
+            conditions=conditions,
+            logic=logic,
+        )
+
+    @classmethod
+    def _parse_where_clause(cls, where_text: str) -> tuple[list[WhereCondition], str]:
+        """Parse WHERE clause into list of WhereCondition.
+
+        Returns (conditions, logic) where logic is 'AND' or 'OR'.
+        """
+        conditions: list[WhereCondition] = []
+        logic = "AND"
+
+        # Check for OR logic
+        if re.search(r"\bOR\b", where_text, re.IGNORECASE):
+            logic = "OR"
+
+        # Split by AND/OR, preserving the operator
+        parts = re.split(r"\s+(?:AND|OR)\s+", where_text, flags=re.IGNORECASE)
+
+        for part in parts:
+            part = part.strip()
+            # Match: field op value
+            m = re.match(
+                r"""(\w+)\s*(=|!=|>=|<=|>|<)\s*(['"])([^'"]*)\3$""",
+                part,
+            )
+            if m:
+                conditions.append(WhereCondition(
+                    field=m.group(1),
+                    op=m.group(2),
+                    value=cls._coerce_value(m.group(4)),
+                ))
+                continue
+
+            # Match: field op number
+            m = re.match(
+                r"""(\w+)\s*(=|!=|>=|<=|>|<)\s*([+-]?\d+\.?\d*)$""",
+                part,
+            )
+            if m:
+                conditions.append(WhereCondition(
+                    field=m.group(1),
+                    op=m.group(2),
+                    value=cls._coerce_value(m.group(3)),
+                ))
+                continue
+
+            # Match: field op bool
+            m = re.match(
+                r"""(\w+)\s*(=|!=|>=|<=|>|<)\s*(true|false)$""",
+                part,
+                re.IGNORECASE,
+            )
+            if m:
+                conditions.append(WhereCondition(
+                    field=m.group(1),
+                    op=m.group(2),
+                    value=m.group(3).lower() == "true",
+                ))
+                continue
+
+        return conditions, logic
+
+    @staticmethod
+    def _coerce_value(raw: str) -> Any:
+        """Coerce a string value to int, float, or keep as str."""
+        raw = raw.strip()
+        if not raw:
+            return raw
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+        try:
+            return float(raw)
+        except ValueError:
+            pass
+        return raw
