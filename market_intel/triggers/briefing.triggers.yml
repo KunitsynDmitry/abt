@@ -1,0 +1,16 @@
+version: 1
+agent: market_intel
+triggers:
+  - name: morning_briefing
+    type: schedule
+    description: "Утренняя сводка конкурентной разведки"
+    schedule: "0 9 * * 1-5"
+    input:
+      mode: full_scan
+
+  - name: briefing_now
+    type: message
+    description: "Запросить сводку вручную через чат"
+    input:
+      mapping:
+        trigger: "$.text"

@@ -266,6 +266,9 @@ class GraphExecutor:
         """
         result: list[dict[str, Any]] = []
 
+        if subgraph_def is None:
+            return result
+
         for child_sg in sorted(subgraph_def.subgraphs, key=lambda s: s.order_index):
             if child_sg.routing == RoutingType.SEQUENTIAL:
                 result.extend(self._flatten_tree(child_sg))

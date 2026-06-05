@@ -1,0 +1,57 @@
+version: 1
+
+models:
+  - name: news_item
+    description: "One classified competitor news item"
+    fields:
+      - name: competitor
+        type: str
+        description: "Company name"
+      - name: title
+        type: str
+        description: "News headline"
+      - name: category
+        type: str
+        description: "Event type"
+        constraints:
+          enum:
+            - "Product launch"
+            - "Hiring/layoffs"
+            - "Pricing/tariffs"
+            - "Investments/deals"
+            - "Partnership"
+            - "Regulation"
+            - "Other"
+      - name: importance
+        type: str
+        description: "How important for us"
+        constraints:
+          enum: ["Critical", "Important", "Background"]
+      - name: summary
+        type: str
+        description: "One-sentence summary"
+      - name: why_matters
+        type: str
+        description: "Why it matters to us"
+
+  - name: daily_briefing
+    description: "Morning competitive intelligence briefing"
+    fields:
+      - name: date
+        type: str
+        description: "Briefing date"
+      - name: total_articles
+        type: int
+        description: "Total articles read"
+      - name: relevant_count
+        type: int
+        description: "Relevant articles found"
+      - name: items
+        type: list[dict]
+        description: "Classified news items"
+      - name: top_story
+        type: str
+        description: "Top story of the day"
+      - name: telegram_message
+        type: str
+        description: "Ready-to-send Telegram message (Markdown)"

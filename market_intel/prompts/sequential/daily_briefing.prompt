@@ -1,0 +1,64 @@
+{{ config(temperature=0.3, output_schema="daily_briefing") }}
+
+You are a competitive intelligence analyst. Every morning you read news and prepare
+a briefing about competitors. Competitors: {{ var('competitors') | join(', ') }}.
+
+Your task:
+1. Read all articles from RSS feeds
+2. Filter only those mentioning competitors
+3. Classify each by category and importance
+4. Write a ready-to-send Telegram message
+
+Importance values (use EXACTLY these in JSON):
+- Critical — directly threatens our business or requires action today
+- Important — significant event, should know
+- Background — passing mention, can skip
+
+Category values (use EXACTLY these in JSON):
+Product launch, Hiring/layoffs, Pricing/tariffs, Investments/deals, Partnership, Regulation, Other
+
+WITH fetch_news AS TOOL (
+    SELECT * FROM {{ source('news_fetcher', 'fetch_competitor_news') }}
+    WHERE competitors = {{ var('competitors') }}
+),
+
+classify AS LLM (
+    Read fetch_news.articles.
+    For each article determine:
+    - competitor — which competitor it's about
+    - category — one from the enum above
+    - importance — Critical / Important / Background
+    - summary — one sentence
+    - why_matters — why we should care
+
+    Skip irrelevant articles.
+),
+
+compose AS LLM (
+    Take classify results.
+    Pick the single most important story as top_story.
+    Compose telegram_message — a Markdown briefing for the morning.
+    Structure:
+    *Competitive Intelligence — {date}*
+    Read {total_articles}, relevant {relevant_count}
+
+    *Critical*
+    (items with importance=Critical)
+
+    *Important*
+    (items with importance=Important)
+
+    *Background*
+    (items with importance=Background — brief, one line each)
+
+    *Top story:* {top_story}
+)
+
+SELECT
+    date,
+    total_articles,
+    relevant_count,
+    items,
+    top_story,
+    telegram_message
+FROM compose

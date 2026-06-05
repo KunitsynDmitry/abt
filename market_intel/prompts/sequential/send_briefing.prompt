@@ -1,0 +1,24 @@
+{{ config(temperature=0) }}
+
+You are the delivery step. Your ONLY job: extract the telegram_message from the
+previous node's output and pass it through.
+
+WITH compose AS LLM (
+    SELECT telegram_message
+    FROM {{ ref('sequential/daily_briefing') }}
+
+    Read the context above. It contains the output of daily_briefing.
+    Find the field "telegram_message" in that context.
+    Return ONLY a JSON object with that field: {"telegram_message": "..."}
+    Do not add any other fields. Do not send anything yourself — just return the JSON.
+),
+
+_send AS TOOL (
+    SELECT * FROM {{ source('telegram', 'send_message') }}
+    WHERE chat_id = '{{ var("telegram_chat_id") }}'
+      AND text = $compose.telegram_message
+)
+
+SELECT
+    ok
+FROM _send

@@ -1,0 +1,37 @@
+version: 1
+
+sources:
+  - name: news_fetcher
+    description: "Скачивает и парсит RSS-ленты новостей"
+    type: python_function
+    tables:
+      - name: fetch_competitor_news
+        description: "Возвращает новости по ключевым словам из RSS-лент"
+        module: rss_fetcher
+        function: fetch_competitor_news
+        params:
+          competitors:
+            type: list[str]
+            description: "Список компаний для поиска"
+          max_articles:
+            type: int
+            default: 20
+
+  - name: telegram
+    description: "Отправка сообщений в Telegram"
+    type: python_function
+    tables:
+      - name: send_message
+        description: "Отправить сообщение в чат"
+        module: telegram_sender
+        function: send_message
+        params:
+          chat_id:
+            type: str
+            required: true
+          text:
+            type: str
+            required: true
+          parse_mode:
+            type: str
+            default: "Markdown"

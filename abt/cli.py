@@ -39,11 +39,13 @@ def init(project_name: str, directory: str):
 
 
 @cli.command()
+@click.option("--project-dir", "-d", default=None,
+              help="Path to abt project (default: auto-detect from CWD)")
 @click.option("--select", "-s", multiple=True, help="Select specific prompt files")
 @click.option("--full-refresh", is_flag=True, help="Ignore cache, recompile from scratch")
-def compile(select: tuple, full_refresh: bool):
+def compile(select: tuple, full_refresh: bool, project_dir):
     """Compile the abt project into manifest.json and target artifacts."""
-    project_root = _find_project_root()
+    project_root = _find_project_root(project_dir)
     click.echo(f"Compiling project at {project_root}...")
 
     selectors = list(select) if select else None
@@ -223,6 +225,12 @@ def _print_node_inspect(qname: str, node, manifest: dict) -> None:
                     )
                     parts.append(f"WHERE {conds}")
                 click.echo(f"      → context: {' '.join(parts)}")
+
+@cli.command()
+@click.option("--project-dir", "-d", default=None,
+              help="Path to abt project (default: auto-detect from CWD)")
+@click.option("--select", "-s", "selectors", multiple=True,
+              help="Select nodes (qualified name or leaf name)")
 @click.option("--exclude", multiple=True, help="Exclude nodes from selection")
 @click.option("--thread-id", help="Execution thread ID (for resuming)")
 @click.option("--input", "-i", "input_file", type=click.Path(exists=True),
@@ -232,9 +240,9 @@ def _print_node_inspect(qname: str, node, manifest: dict) -> None:
 @click.option("--stream/--no-stream", default=True, help="Stream output to console")
 @click.option("--refresh/--no-refresh", default=False, help="Force re-execute all nodes (ignore cache)")
 @click.option("--verbose", "-v", is_flag=True, help="Show LLM traces")
-def run(selectors, exclude, thread_id, input_file, trigger, db_path, stream, refresh, verbose):
+def run(selectors, exclude, thread_id, input_file, trigger, db_path, stream, refresh, verbose, project_dir):
     """Execute the compiled graph with SQLite persistence."""
-    project_root = _find_project_root()
+    project_root = _find_project_root(project_dir)
     click.echo(f"Running project at {project_root}...")
 
     from .compiler.selector import NodeSelector
@@ -306,7 +314,10 @@ def run(selectors, exclude, thread_id, input_file, trigger, db_path, stream, ref
                 if evt == "cte_start":
                     click.echo(f"\n[{data['node']}/{data['cte']}] ", nl=False)
                 elif evt == "token":
-                    click.echo(data["delta"], nl=False)
+                    try:
+                        click.echo(data["delta"], nl=False)
+                    except UnicodeEncodeError:
+                        click.echo(data["delta"].encode("ascii", errors="replace").decode("ascii"), nl=False)
                 elif evt == "cte_end":
                     click.echo()
             elif etype == "interrupt":
@@ -357,7 +368,11 @@ def run(selectors, exclude, thread_id, input_file, trigger, db_path, stream, ref
     for node_name, output in node_outputs.items():
         click.echo(f"  {node_name}:")
         for key, val in output.items():
-            click.echo(f"    {key}: {val}")
+            try:
+                click.echo(f"    {key}: {val}")
+            except UnicodeEncodeError:
+                # Windows cp1251 console — replace emoji and other non-encodable chars
+                click.echo(f"    {key}: {str(val).encode('ascii', errors='replace').decode('ascii')}")
 
     if verbose:
         executor.print_traces()
@@ -367,12 +382,14 @@ def run(selectors, exclude, thread_id, input_file, trigger, db_path, stream, ref
 
 
 @cli.command()
+@click.option("--project-dir", "-d", default=None,
+              help="Path to abt project (default: auto-detect from CWD)")
 @click.option("--select", "-s", "selectors", multiple=True,
               help="Test specific nodes (dbt-style)")
 @click.option("--exclude", multiple=True, help="Exclude nodes from testing")
 @click.option("--db-path", default=":memory:", help="SQLite database path")
 @click.option("--verbose", "-v", is_flag=True, help="Show detailed test output")
-def test(selectors, exclude, db_path, verbose):
+def test(selectors, exclude, db_path, verbose, project_dir):
     """Run data assertions defined in .test.yml files.
 
     Test files live alongside .prompt files and define assertions
@@ -386,7 +403,7 @@ def test(selectors, exclude, db_path, verbose):
           - name: location_not_empty
             assert: location is not null
     """
-    project_root = _find_project_root()
+    project_root = _find_project_root(project_dir)
 
     from .compiler.selector import NodeSelector
     from .runtime.db import DatabaseManager
@@ -478,16 +495,18 @@ def test(selectors, exclude, db_path, verbose):
 
 
 @cli.command()
+@click.option("--project-dir", "-d", default=None,
+              help="Path to abt project (default: auto-detect from CWD)")
 @click.option("--port", type=int, default=8000, help="HTTP server port")
 @click.option("--host", default="127.0.0.1", help="Bind address")
 @click.option("--no-scheduler", is_flag=True, help="Disable cron scheduler")
 @click.option("--no-webhook", is_flag=True, help="Disable webhook routes")
 @click.option("--db-path", default="abt_state.db", help="SQLite database path")
-def serve(port, host, no_scheduler, no_webhook, db_path):
+def serve(port, host, no_scheduler, no_webhook, db_path, project_dir):
     """Start the ABT server with webhook handlers and optional scheduler."""
     import uvicorn
 
-    project_root = _find_project_root()
+    project_root = _find_project_root(project_dir)
     click.echo(f"Serving project at {project_root}...")
 
     from .compiler.trigger_parser import TriggerParser
@@ -735,10 +754,20 @@ def _compile_project(project_root: Path, full_refresh: bool,
     }
 
 
-def _find_project_root() -> Path:
+def _find_project_root(explicit: str | None = None) -> Path:
+    if explicit:
+        root = Path(explicit).resolve()
+        if not (root / "abt_project.yml").exists():
+            raise click.ClickException(
+                f"abt_project.yml not found in '{root}'. Is this an abt project?"
+            )
+        sys.path.insert(0, str(root))
+        _load_dotenv(root)
+        return root
     current = Path.cwd()
     for parent in [current] + list(current.parents):
         if (parent / "abt_project.yml").exists():
+            sys.path.insert(0, str(parent))
             _load_dotenv(parent)
             return parent
     raise click.ClickException(

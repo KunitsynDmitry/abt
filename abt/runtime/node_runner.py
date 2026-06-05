@@ -265,6 +265,15 @@ def _execute_tool_cte(cte, cte_results, tools, db, run_id, source_defs=None):
                 _validate_tool_params(params, tbl, source_name, table_name)
                 break
 
+    # Resolve $cte.field references in params from previous CTE results
+    for key, val in list(params.items()):
+        if isinstance(val, str):
+            m = re.match(r"^\$(\w+)\.(.+)$", val)
+            if m:
+                cte_name, field = m.group(1), m.group(2)
+                if cte_name in cte_results and isinstance(cte_results[cte_name], dict):
+                    params[key] = _resolve_jsonpath(cte_results[cte_name], field)
+
     try:
         result = tools[tool_key](**params)
         return {"data": result}
@@ -275,50 +284,103 @@ def _execute_tool_cte(cte, cte_results, tools, db, run_id, source_defs=None):
 def _parse_tool_params(rendered: str) -> dict[str, Any]:
     """Extract all WHERE key=value pairs from rendered tool CTE content.
 
-    Supports: strings ('value', "value"), integers, floats, booleans, None.
+    Supports: quoted strings, numbers, booleans, None, JSON arrays/objects, $cte.field refs.
     """
+    import ast
+
     params: dict[str, Any] = {}
 
-    # Split on WHERE keyword, take everything after it
     where_idx = rendered.upper().find("WHERE")
     if where_idx == -1:
         return params
 
     where_clause = rendered[where_idx + 5:].strip()
 
-    # Parse key=value pairs with support for quoted strings, numbers, booleans
-    # Pattern: key = 'string' | "string" | number | true | false | None
-    kv_pattern = re.compile(
-        r"""(\w+)\s*=\s*(?:
-            '([^']*)'|
-            "([^"]*)"|
-            (\d+\.?\d*)|
-            (true|false)|
-            (None)
-        )""",
-        re.IGNORECASE | re.VERBOSE,
-    )
+    # Split on top-level AND (not inside quotes or brackets)
+    parts = _split_top_level(where_clause, "AND")
 
-    for m in kv_pattern.finditer(where_clause):
+    for part in parts:
+        part = part.strip()
+        # Extract key = value (split on first =)
+        m = re.match(r"(\w+)\s*=\s*(.+)", part, re.DOTALL)
+        if not m:
+            continue
         key = m.group(1)
-        str_single = m.group(2)
-        str_double = m.group(3)
-        num_val = m.group(4)
-        bool_val = m.group(5)
-        none_val = m.group(6)
+        value_str = m.group(2).strip()
 
-        if str_single is not None:
-            params[key] = str_single
-        elif str_double is not None:
-            params[key] = str_double
-        elif bool_val is not None:
-            params[key] = bool_val.lower() == "true"
-        elif none_val is not None:
-            params[key] = None
-        elif num_val is not None:
-            params[key] = float(num_val) if "." in num_val else int(num_val)
+        # $cte.field reference — keep as-is, resolved later in _execute_tool_cte
+        if re.match(r"^\$[\w.]+$", value_str):
+            params[key] = value_str
+            continue
+
+        # Normalize lowercase booleans (not valid Python, but common in configs)
+        if value_str.lower() == "true":
+            params[key] = True
+            continue
+        if value_str.lower() == "false":
+            params[key] = False
+            continue
+
+        # Try ast.literal_eval (handles strings, numbers, lists, dicts, Python True/False/None)
+        try:
+            params[key] = ast.literal_eval(value_str)
+        except (ValueError, SyntaxError):
+            # Unquoted bare word or other unparseable value — keep as string
+            params[key] = value_str
 
     return params
+
+
+def _split_top_level(text: str, separator: str) -> list[str]:
+    """Split text by separator, ignoring separators inside quotes, brackets, or parens."""
+    parts: list[str] = []
+    depth: dict[str, int] = {"[": 0, "{": 0, "(": 0}
+    quote: str | None = None
+    start = 0
+    i = 0
+    sep = f" {separator} "
+
+    while i < len(text):
+        ch = text[i]
+
+        if quote:
+            if ch == "\\" and i + 1 < len(text):
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            continue
+
+        if ch == "[":
+            depth["["] += 1
+        elif ch == "]":
+            depth["["] -= 1
+        elif ch == "{":
+            depth["{"] += 1
+        elif ch == "}":
+            depth["{"] -= 1
+        elif ch == "(":
+            depth["("] += 1
+        elif ch == ")":
+            depth["("] -= 1
+
+        # Check for separator at top level
+        if all(d == 0 for d in depth.values()) and text[i:].startswith(sep):
+            parts.append(text[start:i])
+            start = i + len(sep)
+            i += len(sep)
+            continue
+
+        i += 1
+
+    parts.append(text[start:])
+    return parts
 
 
 def _validate_tool_params(
@@ -471,6 +533,16 @@ def _execute_llm_cte(cte, cte_results, state, node, llm_client, db, run_id,
             except json.JSONDecodeError:
                 pass
         return {"raw_response": content}
+
+
+def _resolve_jsonpath(data: dict, path: str) -> Any:
+    """Resolve dotted path against a dict. Returns None if missing."""
+    for part in path.split("."):
+        if isinstance(data, dict):
+            data = data.get(part)
+        else:
+            return None
+    return data
 
 
 def _apply_context_projection(raw_value, projection) -> dict | list:

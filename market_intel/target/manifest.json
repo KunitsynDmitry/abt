@@ -1,0 +1,540 @@
+{
+  "metadata": {
+    "project_name": "market_intel",
+    "project_version": "0.1.0",
+    "generated_at": "2026-06-05T11:40:49.076748+00:00",
+    "abt_version": "0.1.0",
+    "node_count": 2,
+    "source_count": 2,
+    "schema_count": 2,
+    "trigger_count": 2,
+    "total_cte_blocks": 5
+  },
+  "file_hashes": {
+    "__project__": "998b028406d8628e220017e292bcb5d50f64633ae28c96636c650ea5a9dc76a6",
+    "__schemas__": "fd387cecc9dd88779648c684dec65753ad3c06b840f1b47fa3eac6387d96cb54",
+    "__sources__": "fe68857cf705aae0123bad7adb5dd340d26df3b7f838100e4f0df9371339137f",
+    "__triggers__": "adb10ad311c02452dfba553b7fb92ea68113e5af603d11a089702f8d911d1ec6",
+    "sequential/daily_briefing": "7a961ae6ba7d2c9e9c7bf3d198e4cea4b04ec973961f57676002f3b9b44c3718",
+    "sequential/send_briefing": "066a69a3deb3d2ecc1cf18f308fb0687fc882c665e302076e347986b745bbcc0"
+  },
+  "nodes": {
+    "sequential/daily_briefing": {
+      "name": "daily_briefing",
+      "qualified_name": "sequential/daily_briefing",
+      "file_path": "sequential/daily_briefing.prompt",
+      "config": {
+        "model": "deepseek-chat",
+        "temperature": 0.3,
+        "max_tokens": 4096,
+        "on_fail_route": null,
+        "max_retries": 1,
+        "max_tool_calls": 5,
+        "on_exhaust": "finalize",
+        "allowed_tools": [],
+        "output_schema": "daily_briefing",
+        "route_on": "",
+        "route_when": [],
+        "route_default": "",
+        "approve_when": "",
+        "approve_message": ""
+      },
+      "system_prompt": "You are a competitive intelligence analyst. Every morning you read news and prepare\na briefing about competitors. Competitors: \u0420\u0407\u0420\u0405\u0420\u0491\u0420\u00b5\u0420\u0454\u0421\u0403, Ozon, Wildberries, \u0420\u040e\u0420\u00b1\u0420\u00b5\u0421\u0402.\n\nYour task:\n1. Read all articles from RSS feeds\n2. Filter only those mentioning competitors\n3. Classify each by category and importance\n4. Write a ready-to-send Telegram message\n\nImportance values (use EXACTLY these in JSON):\n- Critical \u2014 directly threatens our business or requires action today\n- Important \u2014 significant event, should know\n- Background \u2014 passing mention, can skip\n\nCategory values (use EXACTLY these in JSON):\nProduct launch, Hiring/layoffs, Pricing/tariffs, Investments/deals, Partnership, Regulation, Other",
+      "cte_blocks": [
+        {
+          "name": "fetch_news",
+          "raw_content": "SELECT * FROM {{ source('news_fetcher', 'fetch_competitor_news') }}\n    WHERE competitors = {{ var('competitors') }}",
+          "rendered_content": "SELECT * FROM __SOURCE__news_fetcher.fetch_competitor_news__\n    WHERE competitors = ['\u0420\u0407\u0420\u0405\u0420\u0491\u0420\u00b5\u0420\u0454\u0421\u0403', 'Ozon', 'Wildberries', '\u0420\u040e\u0420\u00b1\u0420\u00b5\u0421\u0402']",
+          "cte_type": "tool",
+          "is_tool_step": true,
+          "tool_refs": [
+            [
+              "news_fetcher",
+              "fetch_competitor_news"
+            ]
+          ],
+          "model_refs": [],
+          "config": null
+        },
+        {
+          "name": "classify",
+          "raw_content": "Read fetch_news.articles.\n    For each article determine:\n    - competitor \u2014 which competitor it's about\n    - category \u2014 one from the enum above\n    - importance \u2014 Critical / Important / Background\n    - summary \u2014 one sentence\n    - why_matters \u2014 why we should care\n\n    Skip irrelevant articles.",
+          "rendered_content": "Read fetch_news.articles.\n    For each article determine:\n    - competitor \u2014 which competitor it's about\n    - category \u2014 one from the enum above\n    - importance \u2014 Critical / Important / Background\n    - summary \u2014 one sentence\n    - why_matters \u2014 why we should care\n\n    Skip irrelevant articles.",
+          "cte_type": "llm",
+          "is_tool_step": false,
+          "tool_refs": [],
+          "model_refs": [],
+          "config": null
+        },
+        {
+          "name": "compose",
+          "raw_content": "Take classify results.\n    Pick the single most important story as top_story.\n    Compose telegram_message \u2014 a Markdown briefing for the morning.\n    Structure:\n    *Competitive Intelligence \u2014 {date}*\n    Read {total_articles}, relevant {relevant_count}\n\n    *Critical*\n    (items with importance=Critical)\n\n    *Important*\n    (items with importance=Important)\n\n    *Background*\n    (items with importance=Background \u2014 brief, one line each)\n\n    *Top story:* {top_story}",
+          "rendered_content": "Take classify results.\n    Pick the single most important story as top_story.\n    Compose telegram_message \u2014 a Markdown briefing for the morning.\n    Structure:\n    *Competitive Intelligence \u2014 {date}*\n    Read {total_articles}, relevant {relevant_count}\n\n    *Critical*\n    (items with importance=Critical)\n\n    *Important*\n    (items with importance=Important)\n\n    *Background*\n    (items with importance=Background \u2014 brief, one line each)\n\n    *Top story:* {top_story}",
+          "cte_type": "llm",
+          "is_tool_step": false,
+          "tool_refs": [],
+          "model_refs": [],
+          "config": null
+        }
+      ],
+      "output_columns": [
+        "date",
+        "total_articles",
+        "relevant_count",
+        "items",
+        "top_story",
+        "telegram_message"
+      ],
+      "dependencies": [],
+      "source_refs": [
+        [
+          "news_fetcher",
+          "fetch_competitor_news"
+        ]
+      ],
+      "resolved_tools": [
+        "news_fetcher.fetch_competitor_news"
+      ],
+      "output_schema": "daily_briefing",
+      "on_fail_target": null,
+      "max_retries": 1,
+      "route_on": null,
+      "route_map": {},
+      "route_default": null,
+      "approve_when": null,
+      "approve_message": null
+    },
+    "sequential/send_briefing": {
+      "name": "send_briefing",
+      "qualified_name": "sequential/send_briefing",
+      "file_path": "sequential/send_briefing.prompt",
+      "config": {
+        "model": "deepseek-chat",
+        "temperature": 0.0,
+        "max_tokens": 4096,
+        "on_fail_route": null,
+        "max_retries": 1,
+        "max_tool_calls": 5,
+        "on_exhaust": "finalize",
+        "allowed_tools": [],
+        "output_schema": "",
+        "route_on": "",
+        "route_when": [],
+        "route_default": "",
+        "approve_when": "",
+        "approve_message": ""
+      },
+      "system_prompt": "You are the delivery step. Your ONLY job: extract the telegram_message from the\nprevious node's output and pass it through.",
+      "cte_blocks": [
+        {
+          "name": "compose",
+          "raw_content": "SELECT telegram_message\n    FROM {{ ref('sequential/daily_briefing') }}\n\n    Read the context above. It contains the output of daily_briefing.\n    Find the field \"telegram_message\" in that context.\n    Return ONLY a JSON object with that field: {\"telegram_message\": \"...\"}\n    Do not add any other fields. Do not send anything yourself \u2014 just return the JSON.",
+          "rendered_content": "SELECT telegram_message\n    FROM __REF__sequential/daily_briefing__\n\n    Read the context above. It contains the output of daily_briefing.\n    Find the field \"telegram_message\" in that context.\n    Return ONLY a JSON object with that field: {\"telegram_message\": \"...\"}\n    Do not add any other fields. Do not send anything yourself \u2014 just return the JSON.",
+          "cte_type": "llm",
+          "is_tool_step": false,
+          "tool_refs": [],
+          "model_refs": [
+            "sequential/daily_briefing"
+          ],
+          "config": null
+        },
+        {
+          "name": "_send",
+          "raw_content": "SELECT * FROM {{ source('telegram', 'send_message') }}\n    WHERE chat_id = '{{ var(\"telegram_chat_id\") }}'\n      AND text = $compose.telegram_message",
+          "rendered_content": "SELECT * FROM __SOURCE__telegram.send_message__\n    WHERE chat_id = '357942084'\n      AND text = $compose.telegram_message",
+          "cte_type": "tool",
+          "is_tool_step": true,
+          "tool_refs": [
+            [
+              "telegram",
+              "send_message"
+            ]
+          ],
+          "model_refs": [],
+          "config": null
+        }
+      ],
+      "output_columns": [
+        "ok"
+      ],
+      "dependencies": [
+        "sequential/daily_briefing"
+      ],
+      "source_refs": [
+        [
+          "telegram",
+          "send_message"
+        ]
+      ],
+      "resolved_tools": [
+        "telegram.send_message"
+      ],
+      "output_schema": null,
+      "on_fail_target": null,
+      "max_retries": 1,
+      "route_on": null,
+      "route_map": {},
+      "route_default": null,
+      "approve_when": null,
+      "approve_message": null
+    }
+  },
+  "sources": {
+    "news_fetcher": {
+      "name": "news_fetcher",
+      "type": "python_function",
+      "description": "\u0420\u040e\u0420\u0454\u0420\u00b0\u0421\u2021\u0420\u0451\u0420\u0406\u0420\u00b0\u0420\u00b5\u0421\u201a \u0420\u0451 \u0420\u0457\u0420\u00b0\u0421\u0402\u0421\u0403\u0420\u0451\u0421\u201a RSS-\u0420\u00bb\u0420\u00b5\u0420\u0405\u0421\u201a\u0421\u2039 \u0420\u0405\u0420\u0455\u0420\u0406\u0420\u0455\u0421\u0403\u0421\u201a\u0420\u00b5\u0420\u2116",
+      "config": {},
+      "tables": [
+        {
+          "name": "fetch_competitor_news",
+          "description": "\u0420\u2019\u0420\u0455\u0420\u00b7\u0420\u0406\u0421\u0402\u0420\u00b0\u0421\u2030\u0420\u00b0\u0420\u00b5\u0421\u201a \u0420\u0405\u0420\u0455\u0420\u0406\u0420\u0455\u0421\u0403\u0421\u201a\u0420\u0451 \u0420\u0457\u0420\u0455 \u0420\u0454\u0420\u00bb\u0421\u040b\u0421\u2021\u0420\u00b5\u0420\u0406\u0421\u2039\u0420\u0458 \u0421\u0403\u0420\u00bb\u0420\u0455\u0420\u0406\u0420\u00b0\u0420\u0458 \u0420\u0451\u0420\u00b7 RSS-\u0420\u00bb\u0420\u00b5\u0420\u0405\u0421\u201a",
+          "endpoint": "",
+          "method": "GET",
+          "params": {
+            "competitors": {
+              "type": "list[str]",
+              "description": "\u0420\u040e\u0420\u0457\u0420\u0451\u0421\u0403\u0420\u0455\u0420\u0454 \u0420\u0454\u0420\u0455\u0420\u0458\u0420\u0457\u0420\u00b0\u0420\u0405\u0420\u0451\u0420\u2116 \u0420\u0491\u0420\u00bb\u0421\u040f \u0420\u0457\u0420\u0455\u0420\u0451\u0421\u0403\u0420\u0454\u0420\u00b0"
+            },
+            "max_articles": {
+              "type": "int",
+              "default": 20
+            }
+          },
+          "result_path": "",
+          "input_schema": {},
+          "module": "rss_fetcher",
+          "function": "fetch_competitor_news"
+        }
+      ]
+    },
+    "telegram": {
+      "name": "telegram",
+      "type": "python_function",
+      "description": "\u0420\u045b\u0421\u201a\u0420\u0457\u0421\u0402\u0420\u00b0\u0420\u0406\u0420\u0454\u0420\u00b0 \u0421\u0403\u0420\u0455\u0420\u0455\u0420\u00b1\u0421\u2030\u0420\u00b5\u0420\u0405\u0420\u0451\u0420\u2116 \u0420\u0406 Telegram",
+      "config": {},
+      "tables": [
+        {
+          "name": "send_message",
+          "description": "\u0420\u045b\u0421\u201a\u0420\u0457\u0421\u0402\u0420\u00b0\u0420\u0406\u0420\u0451\u0421\u201a\u0421\u040a \u0421\u0403\u0420\u0455\u0420\u0455\u0420\u00b1\u0421\u2030\u0420\u00b5\u0420\u0405\u0420\u0451\u0420\u00b5 \u0420\u0406 \u0421\u2021\u0420\u00b0\u0421\u201a",
+          "endpoint": "",
+          "method": "GET",
+          "params": {
+            "chat_id": {
+              "type": "str",
+              "required": true
+            },
+            "text": {
+              "type": "str",
+              "required": true
+            },
+            "parse_mode": {
+              "type": "str",
+              "default": "Markdown"
+            }
+          },
+          "result_path": "",
+          "input_schema": {},
+          "module": "telegram_sender",
+          "function": "send_message"
+        }
+      ]
+    }
+  },
+  "schemas": {
+    "news_item": {
+      "name": "news_item",
+      "description": "",
+      "fields": [
+        {
+          "name": "competitor",
+          "type": "str",
+          "description": "Company name",
+          "required": true
+        },
+        {
+          "name": "title",
+          "type": "str",
+          "description": "News headline",
+          "required": true
+        },
+        {
+          "name": "category",
+          "type": "Literal['Product launch', 'Hiring/layoffs', 'Pricing/tariffs', 'Investments/deals', 'Partnership', 'Regulation', 'Other']",
+          "description": "Event type",
+          "required": true
+        },
+        {
+          "name": "importance",
+          "type": "Literal['Critical', 'Important', 'Background']",
+          "description": "How important for us",
+          "required": true
+        },
+        {
+          "name": "summary",
+          "type": "str",
+          "description": "One-sentence summary",
+          "required": true
+        },
+        {
+          "name": "why_matters",
+          "type": "str",
+          "description": "Why it matters to us",
+          "required": true
+        }
+      ],
+      "json_schema": {
+        "properties": {
+          "competitor": {
+            "description": "Company name",
+            "title": "Competitor",
+            "type": "string"
+          },
+          "title": {
+            "description": "News headline",
+            "title": "Title",
+            "type": "string"
+          },
+          "category": {
+            "description": "Event type",
+            "enum": [
+              "Product launch",
+              "Hiring/layoffs",
+              "Pricing/tariffs",
+              "Investments/deals",
+              "Partnership",
+              "Regulation",
+              "Other"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "importance": {
+            "description": "How important for us",
+            "enum": [
+              "Critical",
+              "Important",
+              "Background"
+            ],
+            "title": "Importance",
+            "type": "string"
+          },
+          "summary": {
+            "description": "One-sentence summary",
+            "title": "Summary",
+            "type": "string"
+          },
+          "why_matters": {
+            "description": "Why it matters to us",
+            "title": "Why Matters",
+            "type": "string"
+          }
+        },
+        "required": [
+          "competitor",
+          "title",
+          "category",
+          "importance",
+          "summary",
+          "why_matters"
+        ],
+        "title": "news_item",
+        "type": "object"
+      }
+    },
+    "daily_briefing": {
+      "name": "daily_briefing",
+      "description": "",
+      "fields": [
+        {
+          "name": "date",
+          "type": "str",
+          "description": "Briefing date",
+          "required": true
+        },
+        {
+          "name": "total_articles",
+          "type": "int",
+          "description": "Total articles read",
+          "required": true
+        },
+        {
+          "name": "relevant_count",
+          "type": "int",
+          "description": "Relevant articles found",
+          "required": true
+        },
+        {
+          "name": "items",
+          "type": "list[dict]",
+          "description": "Classified news items",
+          "required": true
+        },
+        {
+          "name": "top_story",
+          "type": "str",
+          "description": "Top story of the day",
+          "required": true
+        },
+        {
+          "name": "telegram_message",
+          "type": "str",
+          "description": "Ready-to-send Telegram message (Markdown)",
+          "required": true
+        }
+      ],
+      "json_schema": {
+        "properties": {
+          "date": {
+            "description": "Briefing date",
+            "title": "Date",
+            "type": "string"
+          },
+          "total_articles": {
+            "description": "Total articles read",
+            "title": "Total Articles",
+            "type": "integer"
+          },
+          "relevant_count": {
+            "description": "Relevant articles found",
+            "title": "Relevant Count",
+            "type": "integer"
+          },
+          "items": {
+            "description": "Classified news items",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "top_story": {
+            "description": "Top story of the day",
+            "title": "Top Story",
+            "type": "string"
+          },
+          "telegram_message": {
+            "description": "Ready-to-send Telegram message (Markdown)",
+            "title": "Telegram Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "date",
+          "total_articles",
+          "relevant_count",
+          "items",
+          "top_story",
+          "telegram_message"
+        ],
+        "title": "daily_briefing",
+        "type": "object"
+      }
+    }
+  },
+  "triggers": {
+    "morning_briefing": {
+      "name": "morning_briefing",
+      "type": "schedule",
+      "description": "\u0420\u0408\u0421\u201a\u0421\u0402\u0420\u00b5\u0420\u0405\u0420\u0405\u0421\u040f\u0421\u040f \u0421\u0403\u0420\u0406\u0420\u0455\u0420\u0491\u0420\u0454\u0420\u00b0 \u0420\u0454\u0420\u0455\u0420\u0405\u0420\u0454\u0421\u0453\u0421\u0402\u0420\u00b5\u0420\u0405\u0421\u201a\u0420\u0405\u0420\u0455\u0420\u2116 \u0421\u0402\u0420\u00b0\u0420\u00b7\u0420\u0406\u0420\u00b5\u0420\u0491\u0420\u0454\u0420\u0451",
+      "schedule": "0 9 * * 1-5",
+      "path": "",
+      "method": "POST",
+      "input": {
+        "mode": "full_scan",
+        "mapping": {},
+        "static": {}
+      }
+    },
+    "briefing_now": {
+      "name": "briefing_now",
+      "type": "message",
+      "description": "\u0420\u2014\u0420\u00b0\u0420\u0457\u0421\u0402\u0420\u0455\u0421\u0403\u0420\u0451\u0421\u201a\u0421\u040a \u0421\u0403\u0420\u0406\u0420\u0455\u0420\u0491\u0420\u0454\u0421\u0453 \u0420\u0406\u0421\u0402\u0421\u0453\u0421\u2021\u0420\u0405\u0421\u0453\u0421\u040b \u0421\u2021\u0420\u00b5\u0421\u0402\u0420\u00b5\u0420\u00b7 \u0421\u2021\u0420\u00b0\u0421\u201a",
+      "schedule": "",
+      "path": "",
+      "method": "POST",
+      "input": {
+        "mode": null,
+        "mapping": {
+          "trigger": "$.text"
+        },
+        "static": {}
+      }
+    }
+  },
+  "graph": {
+    "routing_tree": {
+      "name": "prompts",
+      "folder_name": "prompts",
+      "routing": "sequential",
+      "metadata": {},
+      "nodes": [],
+      "subgraphs": [
+        {
+          "name": "prompts.sequential",
+          "folder_name": "sequential",
+          "routing": "sequential",
+          "metadata": {},
+          "nodes": [
+            "sequential/daily_briefing",
+            "sequential/send_briefing"
+          ],
+          "subgraphs": []
+        }
+      ]
+    },
+    "dependency_graph": {
+      "sequential/daily_briefing": [],
+      "sequential/send_briefing": [
+        "sequential/daily_briefing"
+      ]
+    },
+    "topological_order": [
+      "sequential/daily_briefing",
+      "sequential/send_briefing"
+    ]
+  },
+  "project": {
+    "name": "market_intel",
+    "version": "0.1.0",
+    "paths": {
+      "prompt_paths": [
+        "prompts"
+      ],
+      "schema_paths": [
+        "schemas"
+      ],
+      "source_paths": [
+        "sources"
+      ],
+      "macro_paths": [
+        "macros"
+      ],
+      "triggers_paths": [
+        "triggers"
+      ],
+      "blueprint_paths": [
+        "blueprints"
+      ],
+      "target_path": "target"
+    },
+    "models": {
+      "default": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "temperature": 0.3,
+        "max_tokens": 4096
+      }
+    },
+    "vars": {
+      "competitors": [
+        "\u0420\u0407\u0420\u0405\u0420\u0491\u0420\u00b5\u0420\u0454\u0421\u0403",
+        "Ozon",
+        "Wildberries",
+        "\u0420\u040e\u0420\u00b1\u0420\u00b5\u0421\u0402"
+      ],
+      "telegram_chat_id": "357942084"
+    }
+  }
+}

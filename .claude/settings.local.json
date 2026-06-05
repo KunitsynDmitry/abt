@@ -57,7 +57,13 @@
       "PowerShell(python -m pytest tests/test_local_only_example.py -v 2>&1)",
       "PowerShell(python -m pytest tests/test_integration.py -v 2>&1)",
       "PowerShell(python -c \"from abt.runtime.executor import GraphExecutor; print\\('OK'\\)\" 2>&1)",
-      "PowerShell(python -m pytest tests/test_blueprints.py -v 2>&1)"
+      "PowerShell(python -m pytest tests/test_blueprints.py -v 2>&1)",
+      "Bash(New-Item *)",
+      "Bash(Select-Object -Last 3)",
+      "Bash(export DEEPSEEK_API_KEY=\"sk-placeholder\")",
+      "Bash(export TELEGRAM_BOT_TOKEN=\"8693385165:AAH2iCZRAGbHLM6PMyapVptnwuI9n4SIom4\")",
+      "Bash(export DEEPSEEK_API_KEY=\"sk-7c115f2d86864783b90c7a3f2e03e062\")",
+      "Bash(export DEEPSEEK_BASE_URL=\"https://api.deepseek.com\")"
     ]
   }
 }
